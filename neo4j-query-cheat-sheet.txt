@@ -1,0 +1,18 @@
+Delete all node
+
+CALL apoc.periodic.iterate(
+  "MATCH (n) RETURN n",
+  "DETACH DELETE n",
+  {batchSize: 10000, parallel: false}
+);
+
+
+Get all node
+
+MATCH (n)
+RETURN n
+
+Get all triplets
+
+MATCH p = ()-->()
+RETURN p

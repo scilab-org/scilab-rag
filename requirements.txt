@@ -1,0 +1,50 @@
+# Build tools (required for graspologic's pkg_resources)
+setuptools==82.0.0
+# Core Framework
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+pydantic==2.12.5
+pydantic-settings==2.12.0
+python-dotenv==1.2.1
+
+# LlamaIndex (matching working environment)
+llama-index==0.14.10
+llama-index-core==0.14.10
+llama-index-graph-stores-neo4j==0.5.1
+llama-index-embeddings-huggingface==0.6.1
+llama-index-llms-openrouter==0.4.2
+llama-index-llms-vertex==0.6.1
+
+transformers==4.42.4
+sentence-transformers==2.7.0
+
+
+hf_xet==1.1.2
+
+# Document Processing
+docling==2.75.0
+
+# Graph Processing
+neo4j==5.28.2
+networkx==3.6.1
+graspologic==3.4.4
+
+# Data Processing
+pandas==2.2.3
+
+# Async
+nest-asyncio==1.6.0
+
+# Compatibility
+future==1.0.0
+
+
+# Database (PostgreSQL ORM)
+sqlalchemy==2.0.29
+asyncpg==0.29.0
+
+#test
+google-cloud-aiplatform>=1.60.0
+
+llama-index-llms-vertex
