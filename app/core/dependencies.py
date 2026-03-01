@@ -6,7 +6,6 @@ from functools import lru_cache
 from typing import Generator
 
 from llama_index.core import Settings as LlamaSettings
-from llama_index.embeddings.huggingface import HuggingFaceEmbedding
 from llama_index.llms.openrouter import OpenRouter
 
 from app.core.config import settings
@@ -31,14 +30,6 @@ def get_llm() -> OpenRouter:
 
 
 @lru_cache
-def get_embed_model() -> HuggingFaceEmbedding:
-    """Get cached embedding model instance."""
-    embed_model = HuggingFaceEmbedding(model_name=settings.EMBEDDING_MODEL)
-    LlamaSettings.embed_model = embed_model
-    return embed_model
-
-
-@lru_cache
 def get_graph_store() -> GraphRAGStore:
     """Get cached graph store instance (singleton for connection pooling)."""
     llm = get_llm()
@@ -55,4 +46,3 @@ def get_graph_store() -> GraphRAGStore:
 def init_llama_settings():
     """Initialize LlamaIndex global settings."""
     get_llm()
-    get_embed_model()
