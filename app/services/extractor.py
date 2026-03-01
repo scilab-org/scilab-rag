@@ -1,10 +1,7 @@
 import asyncio
+import concurrent.futures
 import logging
 from typing import Any, Callable, Optional, Union, List
-
-import nest_asyncio
-
-nest_asyncio.apply()
 
 from llama_index.core.prompts import PromptTemplate
 from llama_index.core.schema import TransformComponent, BaseNode
@@ -69,8 +66,19 @@ class GraphRAGExtractor(TransformComponent):
             loop = None
 
         if loop and loop.is_running():
-            # FastAPI / async context
-            return loop.run_until_complete(self.acall(nodes, show_progress))
+            # Running inside an event loop (e.g., FastAPI with uvloop)
+            # Use a thread pool to run async code in a separate thread
+            def run_in_new_loop():
+                new_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(new_loop)
+                try:
+                    return new_loop.run_until_complete(self.acall(nodes, show_progress))
+                finally:
+                    new_loop.close()
+            
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(run_in_new_loop)
+                return future.result()
         else:
             return asyncio.run(self.acall(nodes, show_progress))
 

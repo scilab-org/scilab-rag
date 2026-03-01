@@ -9,7 +9,7 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from app.api.api_models.request import IngestRequest, ChatRequest
 from app.api.api_models.response import PdfUploadResponse, IngestResponse, ChatResponse
 from app.core.config import settings
-from app.core.dependencies import get_graph_store, get_llm, get_embed_model
+from app.core.dependencies import get_graph_store, get_llm
 from app.core.prompts import KG_TRIPLET_EXTRACT_TMPL
 from app.services.utils import parse_fn
 
@@ -125,7 +125,6 @@ async def ingest_to_kg(request: IngestRequest):
         from app.services.extractor import GraphRAGExtractor
 
         llm = get_llm()
-        embed_model = get_embed_model()
         graph_store = get_graph_store()
 
         parsed_text = parse_document(
@@ -152,7 +151,7 @@ async def ingest_to_kg(request: IngestRequest):
         index = PropertyGraphIndex(
             nodes=nodes_with_kg,
             property_graph_store=graph_store,
-            embed_model=embed_model,
+            embed_model=None,
             show_progress=True,
             kg_extractors=[],
         )
@@ -192,7 +191,6 @@ async def chat(request: ChatRequest):
         logger.debug("Getting dependencies for chat request")
         graph_store = get_graph_store()
         llm = get_llm()
-        embed_model = get_embed_model()
 
         logger.debug("Checking for existing community summaries")
         if not graph_store.community_summary:
@@ -208,7 +206,7 @@ async def chat(request: ChatRequest):
         logger.debug("Loading property graph index")
         index = PropertyGraphIndex.from_existing(
             property_graph_store=graph_store,
-            embed_model=embed_model,
+            embed_model=None,
         )
 
         logger.debug("Creating GraphRAGQueryEngine")
