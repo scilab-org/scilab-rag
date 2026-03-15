@@ -5,13 +5,12 @@ System router for database and infrastructure endpoints.
 import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.api_models.response import DbStatusResponse, SystemInfoResponse
-from app.api.api_models.request import SystemInfoRequest
-from app.core.database import get_db
-from app.services import system as system_service
+from app.api.api_models.response import DbStatusResponse
+from app.db.database import get_db
+from app.db import system as system_service
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +19,6 @@ router = APIRouter(
     prefix="/system",
     tags=["System"],
 )
-
 
 @router.get("/db", response_model=DbStatusResponse)
 async def check_database(
@@ -39,6 +37,6 @@ async def check_database(
             detail="Database connection failed",
         )
 
-    return DbStatusResponse(status="ok")
+    return DbStatusResponse(status=f'{is_connected}')
 
 

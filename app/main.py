@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.api import api_router
 from app.core.config import settings
-
+from app.auth import CurrentUser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -33,8 +33,6 @@ async def lifespan(app: FastAPI):
     
     # Shutdown: Cleanup temp files
     logger.info("Shutting down Scilab-AI Service...")
-    
-
 
 app = FastAPI(
     title="Scilab-AI Service",
@@ -44,12 +42,16 @@ Graph RAG API for academic paper analysis.
 """,
     version="1.0.0",
     lifespan=lifespan,
+    swagger_ui_init_oauth={
+        "clientId": settings.KEYCLOAK_CLIENT_ID,
+        "usePkceWithAuthorizationCodeGrant": True,
+    },
 )
 
 # CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[settings.FRONTEND_URL, settings.GATEWAY_URL],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,9 +62,13 @@ app.include_router(api_router)
 
 
 @app.get("/health")
-async def health_check():
-    """Health check endpoint."""
-    return {"status": "healthy", "service": "scilab-ai"}
+async def health_check(user: CurrentUser):
+    """Health check endpoint (requires authentication)."""
+    return {
+        "status": "healthy",
+        "service": "scilab-ai",
+        "user": user.username,
+    }
 
 
 if __name__ == "__main__":

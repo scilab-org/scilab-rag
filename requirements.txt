@@ -30,13 +30,13 @@ pandas==2.2.3
 # Compatibility
 future==1.0.0
 
-
 # Database (PostgreSQL ORM)
 sqlalchemy==2.0.29
 asyncpg==0.29.0
 
-# Google Cloud / Vertex AI
-google-cloud-aiplatform>=1.60.0
+#keycloak
+python-keycloak==6.0.0
+python-jose[cryptography]==3.3.0
 
-# Google AI Studio (Gemini API with API key)
-google-generativeai>=0.8.0
+#tiktoken
+tiktoken==0.9.0

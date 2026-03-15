@@ -48,3 +48,7 @@ node_modules/
 # Docker files (optional, usually not needed in image)
 docker-compose*.yml
 Dockerfile*
+
+data/
+.opencode/
+nul

@@ -2,7 +2,6 @@
 API request schemas.
 """
 
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -13,7 +12,7 @@ class PaperAutoTagRequest(BaseModel):
         min_length=100,
         description="The extracted text from the PDF"
     )
-    
+
     existingTags: list[str] | None = Field(
         description="Existing tags for the paper (optional)",
         default=None,
@@ -22,33 +21,15 @@ class PaperAutoTagRequest(BaseModel):
 class IngestRequest(BaseModel):
     """Request to ingest a document into the Knowledge Graph."""
     
-    documentId: str = Field(..., description="ID of the uploaded PDF document")
-    doPictureDescription: bool = Field(
-        default=False,
-        description="Enable AI-generated descriptions for images in the PDF",
-    )
-    doFormulaEnrichment: bool = Field(
-        default=False,
-        description="Enable formula enrichment for mathematical expressions",
-    )
-    maxTripletsPerChunk: Optional[int] = Field(
-        default=None,
-        description="Maximum entity-relation triplets to extract per chunk",
-    )
+    paperId: str = Field(..., description="ID of the uploaded PDF document")
+    paperName: str = Field(..., description="Original filename of the PDF")
+    parsedText: str = Field(..., description="JSON string of parsed chunks from the PDF (output of /papers/parse)")
 
 
 class ChatRequest(BaseModel):
     """Request to chat with the Knowledge Graph."""
 
     message: str = Field(..., description="The question to ask", min_length=1)
-    similarityTopK: Optional[int] = Field(
-        default=None,
-        description="Number of similar entities to retrieve",
-    )
+    projectId: str = Field(..., description="Project ID to scope the query to")
 
 
-class SystemInfoRequest(BaseModel):
-    """Request to create or update system info."""
-
-    key: str = Field(..., description="Info key", min_length=1, max_length=255)
-    value: Optional[str] = Field(None, description="Info value")

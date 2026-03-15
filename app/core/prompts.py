@@ -3,188 +3,151 @@ Prompt templates for knowledge graph extraction and query processing.
 """
 
 KG_TRIPLET_EXTRACT_TMPL = """
--Context-
-The input is a CHUNK of a larger document.
-All chunks belong to ONE and ONLY ONE Paper.
-The Paper identity MUST remain consistent across chunks.
-
 -Goal-
-Extract a schema-compliant knowledge graph centered on exactly ONE Paper entity.
-All entities must be connected (directly or indirectly) to this Paper.
+You are extracting knowledge graph entities and relationships from a CHUNK of a scientific research paper.
+Multiple chunks are processed independently and merged later.
+Extract up to {max_knowledge_triplets} triplets explicitly supported by the chunk.
 
-Extract up to {max_knowledge_triplets} triplets.
+## SECTION CONTEXT
+This chunk comes from the following section(s) of the paper:
+{section_headings}
 
-========================
-KNOWLEDGE GRAPH SCHEMA
-========================
+## PAPER CONTEXT
+Paper Title: {paper_title}
 
-Allowed ENTITY TYPES (only these):
-- Paper
-- Reference
-- Section
-- Argument
-- Claim
-- Evidence
-- Concept
-- Background
-- Author
+## ENTITY TYPES
+Allowed ENTITY TYPES (exactly these, no subtypes):
+- Paper     : a research paper (source or cited)
+- Author    : a person who authored a paper
+- Section   : a named structural part of the paper (e.g., "Introduction", "Results")
+- Concept   : a technical idea, theory, principle, or domain term
+- Method    : an algorithm, model, technique, or approach
+- Tool      : a software, instrument, device, or system used in the work
+- Dataset   : a dataset, corpus, cohort, specimen collection, or experimental data source
+- Finding   : a result, conclusion, observation, or measured outcome
+- Reference : a bibliographic citation
 
-Entity Rules:
-- Subtypes are NOT allowed.
-- Do NOT encode subtype information in entity_type.
-- Capture subtype details only in entity_description.
-- Do NOT extract isolated entities.
-
-========================
-RELATIONSHIP RULES
-========================
-
-All relationships MUST:
-
-1. Use ONLY the allowed relationship types below.
-2. Be lowercase.
-3. Use snake_case.
-4. Contain no spaces.
-5. Match EXACTLY one allowed relationship.
-6. Follow the specified direction.
-
-Allowed Relationships:
+## ALLOWED RELATIONSHIPS
+The "relation" field MUST be copied VERBATIM from this list. 
+Any other value is a critical error.
 
 Paper-centered:
-- Paper -> Section : has
-- Paper -> Reference : cites
-- Paper -> Background : has
-- Paper -> Paper : cites
-- Author -> Paper : wrote
+- Paper    -> Section   : HAS_SECTION
+- Author   -> Paper     : WROTE
 
 Structural:
-- Section -> Concept : mentions
-- Section -> Argument : contains
-- Argument -> Claim : has
-- Claim -> Evidence : supported_by
+- Section  -> Concept   : MENTIONS
+- Section  -> Method    : DESCRIBES
+- Section  -> Finding   : PRESENTS
+- Section  -> Tool      : MENTIONS
+- Section  -> Dataset   : MENTIONS
 
-Concept:
-- Concept -> Concept : related_to
+Technical:
+- Method   -> Concept   : BASED_ON
+- Method   -> Tool      : IMPLEMENTED_IN
+- Method   -> Dataset   : EVALUATED_ON
+- Method   -> Method    : EXTENDS
+- Tool     -> Tool      : INTEGRATES
+- Finding  -> Method    : PRODUCED_BY
+- Concept  -> Concept   : RELATED_TO
 
-If a relationship does not exactly match the allowed list, DO NOT extract it.
+CRITICAL RULES FOR RELATIONSHIPS:
+- If the correct relation is not in the list above → DROP the relationship entirely.
+- NEVER invent a relation string. NEVER use lowercase. NEVER use spaces.
+- "source_entity" and "target_entity" MUST exactly match an "entity_name" from your entities list.
+- The (source_type → target_type) pair MUST match the table above.
+  e.g. Method -> Dataset : EVALUATED_ON is valid.
+       Dataset -> Method : EVALUATED_ON is NOT valid.
 
-========================
-IDENTITY CONSTRAINTS
-========================
+## EXTRACTION RULES
+1. Extract ONLY entities and relationships explicitly stated in the chunk.
+2. Do NOT invent entities or relationships.
+3. "{paper_title}" is the SOURCE paper. If the chunk says "this paper" / "we propose", 
+   use this exact title as the Paper entity name.
+4. Do NOT force a Paper entity if the chunk has none.
+5. Use consistent canonical names across chunks (e.g., "DocLayNet" not "the DocLayNet dataset").
+6. Capture nuance in entity_description, not entity_type.
+7. Fewer than {max_knowledge_triplets} triplets is fine. 
+   Return empty lists if nothing is extractable.
+8. Each relationship must reference valid entities from your entities list.
 
-- Exactly ONE Paper entity MUST exist.
-- If the title appears, use it verbatim as entity_name.
-- Otherwise infer a stable Paper identity.
-- The same Paper name MUST be reused consistently.
-- Every entity must connect to the Paper.
-- No disconnected subgraphs.
+## OUTPUT FORMAT
+Valid JSON only. No markdown. No extra text. Start with {{ end with }}.
+If nothing extractable: {{ "entities": [], "relationships": [] }}
 
-========================
-OUTPUT FORMAT
-========================
+Required keys:
+- Each entity   : "entity_name", "entity_type", "entity_description"
+- Each relation : "source_entity", "target_entity", "relation", "relationship_description"
 
-Return valid JSON with EXACTLY two keys:
-- "entities"
-- "relationships"
+## CORRECT EXAMPLE
 
-The output:
-- MUST start with '{' and end with '}'
-- MUST contain no markdown fences
-- MUST contain no extra text
-- MUST be valid JSON
+Input chunk:
+"We propose GraphRAG, a retrieval-augmented generation framework that uses 
+hierarchical Leiden clustering to detect communities in a Neo4j property graph. 
+The method is evaluated on the BEIR benchmark dataset and extends Dense Passage Retrieval."
 
-If nothing valid is found, return:
-{ "entities": [], "relationships": [] }
-
-========================
-SAMPLE OUTPUT
-========================
-
-{
+Output:
+{{
   "entities": [
-    {
-      "entity_name": "Attention Is All You Need",
-      "entity_type": "Paper",
-      "entity_description": "The main research paper introducing the Transformer architecture."
-    },
-    {
-      "entity_name": "Introduction",
-      "entity_type": "Section",
-      "entity_description": "The section introducing the motivation of the paper."
-    },
-    {
-      "entity_name": "Transformer Model",
-      "entity_type": "Concept",
-      "entity_description": "A neural architecture based on self-attention."
-    },
-    {
-      "entity_name": "Vaswani et al. 2017",
-      "entity_type": "Reference",
-      "entity_description": "The cited work that introduced the Transformer."
-    }
+    {{"entity_name": "GraphRAG", "entity_type": "Method", "entity_description": "A retrieval-augmented generation framework using community detection over property graphs"}},
+    {{"entity_name": "Hierarchical Leiden Clustering", "entity_type": "Method", "entity_description": "A graph partitioning algorithm used to detect communities at multiple granularities"}},
+    {{"entity_name": "Neo4j", "entity_type": "Tool", "entity_description": "A property graph database used to store and query the knowledge graph"}},
+    {{"entity_name": "BEIR", "entity_type": "Dataset", "entity_description": "A heterogeneous benchmark for information retrieval evaluation"}},
+    {{"entity_name": "Dense Passage Retrieval", "entity_type": "Method", "entity_description": "A dense retrieval baseline that GraphRAG extends"}}
   ],
   "relationships": [
-    {
-      "source_entity": "Attention Is All You Need",
-      "target_entity": "Introduction",
-      "relation": "has",
-      "relationship_description": "The paper contains an introduction section."
-    },
-    {
-      "source_entity": "Introduction",
-      "target_entity": "Transformer Model",
-      "relation": "mentions",
-      "relationship_description": "The introduction mentions the Transformer model."
-    },
-    {
-      "source_entity": "Attention Is All You Need",
-      "target_entity": "Vaswani et al. 2017",
-      "relation": "cites",
-      "relationship_description": "The paper cites the original Transformer work."
-    }
+    {{"source_entity": "GraphRAG", "target_entity": "Hierarchical Leiden Clustering", "relation": "BASED_ON", "relationship_description": "GraphRAG uses Leiden clustering as its community detection backbone"}},
+    {{"source_entity": "GraphRAG", "target_entity": "Neo4j", "relation": "IMPLEMENTED_IN", "relationship_description": "The property graph is stored and queried using Neo4j"}},
+    {{"source_entity": "GraphRAG", "target_entity": "BEIR", "relation": "EVALUATED_ON", "relationship_description": "GraphRAG's retrieval quality is measured against the BEIR benchmark"}},
+    {{"source_entity": "GraphRAG", "target_entity": "Dense Passage Retrieval", "relation": "EXTENDS", "relationship_description": "GraphRAG builds upon and improves over Dense Passage Retrieval"}}
   ]
-}
+}}
 
-========================
-REAL DATA
-========================
-text: {text}
+## WRONG EXAMPLE (never do this)
+{{
+  "relationships": [
+    {{"source_entity": "GraphRAG", "target_entity": "BEIR", "relation": "tested_on"}},
+    {{"source_entity": "the proposed method", "target_entity": "BEIR", "relation": "EVALUATED_ON"}},
+    {{"source_entity": "BEIR", "target_entity": "GraphRAG", "relation": "EVALUATED_ON"}}
+  ]
+}}
+Reasons: "tested_on" not in allowed list. "the proposed method" not in entities list. Direction is wrong.
+
+## CHUNK TEXT
+{text}
 
 output:
 """
 
-COMMUNITY_SUMMARY_SYSTEM_PROMPT = """
-You are provided with a set of relationships from a knowledge graph, each represented as 
-entity1->entity2->relation->relationship_description. Your task is to create a summary of these 
-relationships. The summary should include the names of the entities involved and a concise synthesis 
-of the relationship descriptions. The goal is to capture the most critical and relevant details that 
-highlight the nature and significance of each relationship. Ensure that the summary is coherent and 
-integrates the information in a way that emphasizes the key aspects of the relationships.
+GRAPH_QA_SYSTEM_PROMPT = """\
+You are HyperDataLab Assistant, a scientific research assistant built by \
+the HyperDataLab team. You help researchers understand, compare, and \
+synthesize information from their uploaded scientific papers.
+
+## Behavioral rules
+1. Answer ONLY from the information retrieved from the user's papers \
+   (provided below as "Paper Notes"). If the notes do not contain enough \
+   information to answer, say so honestly — never fabricate.
+2. NEVER mention internal implementation details such as "knowledge graph", \
+   "entities", "relationships", "triplets", "nodes", "edges", "embeddings", \
+   "vector search", or "retrieval". From the user's perspective you simply \
+   read their papers.
+3. Cite papers by title when the information comes from a specific paper.
+4. When multiple papers discuss the same topic, synthesize and compare \
+   rather than repeating each paper separately.
+5. Be concise, precise, and use academic tone. Use bullet points or \
+   numbered lists when appropriate.
+6. If asked about something unrelated to the user's papers, politely \
+   redirect: "I can only help with questions about your uploaded papers."
 """
 
-QUERY_ANSWER_PROMPT = """
-Answer the question below as if you are responding directly to a user.
+GRAPH_QA_USER_PROMPT = """\
+## Paper Notes
+{context}
 
-Guidelines:
-- Do NOT mention or refer to any internal processes, summaries, or intermediate data.
-- Do NOT use phrases such as "community summary", "based on the information above",
-  "the provided data", "no community", or similar meta expressions.
-- Provide a natural, confident answer.
-- Reasoning and inference are allowed, but must remain implicit.
-
-Question:
-{query}
-"""
-
-AGGREGATE_ANSWERS_PROMPT = """
-You are responding to a user question based on user given context.
-
-Instructions:
-- Produce a single final answer.
-- Do NOT mention combining, aggregating, or synthesizing.
-- Do NOT refer to previous answers or internal steps.
-- The response must read as a direct standalone answer.
-"""
+## Question
+{question}
+""" 
 
 
 CHUNK_SUMMARY_PROMPT = """
@@ -296,6 +259,8 @@ and contrastive embedding alignment for large-scale scientific corpora."
 Expected Output:
 {
   "tags": [
+    "Knowledge Graph",
+    "Semantic Search",
     "Graph Machine Learning",
     "Information Retrieval",
     "Retrieval-Augmented Generation",
@@ -304,10 +269,6 @@ Expected Output:
     "Contrastive Embedding Alignment"
   ]
 }
-
-In this example:
-- "Graph Machine Learning" and "Information Retrieval" are Domain-Level tags.
-- The remaining tags are Specific Technical tags.
 
 ----------------------------------------
 

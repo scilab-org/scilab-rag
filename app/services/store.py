@@ -1,129 +1,250 @@
-"""GraphRAG Store with community detection and summarization."""
+"""GraphRAG Store with paper-scoped entities and SAME_AS cross-paper linking."""
 
 import logging
-import re
-from collections import defaultdict
 from typing import Dict, List, Optional
 
-import networkx as nx
-from graspologic.partition import hierarchical_leiden
-from llama_index.core.llms import ChatMessage, LLM
 from llama_index.graph_stores.neo4j import Neo4jPropertyGraphStore
-
-from app.core.prompts import COMMUNITY_SUMMARY_SYSTEM_PROMPT
-
 
 logger = logging.getLogger(__name__)
 
 
 class GraphRAGStore(Neo4jPropertyGraphStore):
     """
-    Extended Neo4j Property Graph Store with community detection.
-    
+    Extended Neo4j Property Graph Store with paper-scoped entity isolation.
+
     Features:
-    - Community detection using Hierarchical Leiden algorithm
-    - LLM-based community summarization
-    - Entity-to-community mapping
+    - Paper-scoped entities (namespaced IDs prevent cross-paper overwrites)
+    - SAME_AS edges link equivalent entities across papers
+      based on entity_key_normalized matching
+    - 2-hop scoped retrieval with SAME_AS traversal
+    - Hybrid retrieval: graph context + original chunk text
     """
-    
-    def __init__(self, *args, llm: Optional[LLM] = None, **kwargs):
+
+    def __init__(self, *args, **kwargs):
+        # Pop 'llm' if callers still pass it (e.g. dependencies.py)
+        # so we don't break the constructor contract during migration.
+        kwargs.pop("llm", None)
         super().__init__(*args, **kwargs)
 
-        if not hasattr(self, "supports_vector_queries"):
-            self.supports_vector_queries = False
+    # ── Ingest: SAME_AS linking ──────────────────────────────────────────────
 
-        self.llm = llm
-        self.community_summary = {}
-        self.entity_info = {}
-        self.max_cluster_size = 5
-    
-    async def generate_community_summary(self, text: str) -> str:
-        """Generate a summary for community relationships using LLM."""
-        messages = [
-            ChatMessage(role="system", content=COMMUNITY_SUMMARY_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=text),
-        ]
-        response = await self.llm.achat(messages)
-        clean_response = re.sub(r"^assistant:\s*", "", str(response)).strip()
-        return clean_response
-    
-    async def build_communities(self) -> None:
-        """Build communities from the graph and summarize them."""
-        nx_graph = self._create_nx_graph()
-        
-        if nx_graph.number_of_nodes() == 0:
-            return
-        
-        community_hierarchical_clusters = hierarchical_leiden(
-            nx_graph, max_cluster_size=self.max_cluster_size
-        )
-        
-        self.entity_info, community_info = self._collect_community_info(
-            nx_graph, community_hierarchical_clusters
-        )
-        
-        await self._summarize_communities(community_info)
-    
-    def _create_nx_graph(self) -> nx.Graph:
-        """Convert Neo4j graph to NetworkX graph."""
-        nx_graph = nx.Graph()
-        triplets = self.get_triplets()
-        logger.debug("Building NetworkX graph from %d triplets", len(triplets))
-        
-        for entity1, relation, entity2 in triplets:
-            nx_graph.add_node(entity1.name)
-            nx_graph.add_node(entity2.name)
-            nx_graph.add_edge(
-                relation.source_id,
-                relation.target_id,
-                relationship=relation.label,
-                description=relation.properties.get("relationship_description", ""),
-            )
-        
-        return nx_graph
-    
-    def _collect_community_info(
-        self, nx_graph: nx.Graph, clusters
-    ) -> tuple:
+    def create_same_as_links(self, paper_id: str) -> int:
+        """Create SAME_AS edges between entities of `paper_id` and entities
+        from OTHER papers that share the same `entity_key_normalized`.
+
+        Returns the number of SAME_AS relationships created.
         """
-        Collect entity and community information from clusters.
-        
+        cypher = """
+        MATCH (a:__Entity__)
+        WHERE a.paper_id = $paper_id
+          AND a.entity_key_normalized IS NOT NULL
+          AND a.entity_key_normalized <> ''
+        WITH a
+        MATCH (b:__Entity__)
+        WHERE b.paper_id <> $paper_id
+          AND b.entity_key_normalized = a.entity_key_normalized
+          AND NOT (a)-[:SAME_AS]-(b)
+        MERGE (a)-[:SAME_AS]->(b)
+        RETURN count(*) AS created
+        """
+        result = self.structured_query(cypher, param_map={"paper_id": paper_id})
+        created = result[0]["created"] if result else 0
+        logger.info(
+            "Created %d SAME_AS links for paper_id=%s", created, paper_id
+        )
+        return created
+
+    # ── Query: scoped 2-hop retrieval + chunk text ───────────────────────────
+
+    def retrieve_scoped_context(
+        self,
+        query_embedding: List[float],
+        paper_ids: List[str],
+        top_k: int = 20,
+    ) -> Dict[str, list]:
+        """Retrieve context for the query pipeline.
+
+        1. Vector similarity search on entity embeddings, scoped to paper_ids
+        2. 2-hop neighbor traversal (all rel types including SAME_AS),
+           with ALL neighbors strictly scoped to paper_ids
+        3. Collect original chunk text via MENTIONS relationships
+
         Returns:
-            entity_info: Mapping of entity names to community IDs
-            community_info: Mapping of community IDs to relationship details
+            {
+                "graph": [  # structured entity/relation records
+                    {
+                        "source_name", "source_type", "source_description",
+                        "source_paper_id", "relation", "relation_description",
+                        "target_name", "target_type", "target_description",
+                        "target_paper_id",
+                    },
+                    ...
+                ],
+                "chunks": [  # original paper text from source chunks
+                    {"text": str, "paper_id": str},
+                    ...
+                ],
+            }
         """
-        entity_info = defaultdict(set)
-        community_info = defaultdict(list)
-        
-        for item in clusters:
-            node = item.node
-            cluster_id = item.cluster
-            
-            entity_info[node].add(cluster_id)
-            
-            for neighbor in nx_graph.neighbors(node):
-                edge_data = nx_graph.get_edge_data(node, neighbor)
-                if edge_data:
-                    detail = (
-                        f"{node} -> {neighbor} -> "
-                        f"{edge_data['relationship']} -> {edge_data['description']}"
-                    )
-                    community_info[cluster_id].append(detail)
-        
-        entity_info = {k: list(v) for k, v in entity_info.items()}
-        
-        return dict(entity_info), dict(community_info)
-    
-    async def _summarize_communities(self, community_info: Dict[int, List[str]]) -> None:
-        """Generate and store summaries for each community."""
-        for community_id, details in community_info.items():
-            details_text = "\n".join(details) + "."
-            self.community_summary[community_id] = await self.generate_community_summary(
-                details_text
-            )
-    
-    async def get_community_summaries(self) -> Dict[int, str]:
-        """Get community summaries, building them if not already done."""
-        if not self.community_summary:
-            await self.build_communities()
-        return self.community_summary
+        graph_records = self._retrieve_graph_context(
+            query_embedding, paper_ids, top_k
+        )
+        chunk_records = self._retrieve_chunk_text(
+            query_embedding, paper_ids, top_k
+        )
+
+        return {
+            "graph": graph_records,
+            "chunks": chunk_records,
+        }
+
+    def _retrieve_graph_context(
+        self,
+        query_embedding: List[float],
+        paper_ids: List[str],
+        top_k: int,
+    ) -> List[Dict]:
+        """Vector search → 2-hop traversal, all nodes scoped to paper_ids."""
+        # NOTE: The vector index name is 'entity' (set by LlamaIndex).
+        cypher = """
+        // Step 1: Vector search — seeds scoped to paper_ids
+        CALL db.index.vector.queryNodes('entity', $top_k, $embedding)
+        YIELD node AS seed, score
+        WHERE seed.paper_id IN $paper_ids
+        WITH seed, score
+        ORDER BY score DESC
+        LIMIT $top_k
+
+        // Step 2: 1-hop neighbors (strict project scope)
+        OPTIONAL MATCH (seed)-[r1]-(hop1:__Entity__)
+        WHERE hop1.paper_id IN $paper_ids
+
+        // Step 3: 2-hop neighbors from hop1 (strict project scope)
+        OPTIONAL MATCH (hop1)-[r2]-(hop2:__Entity__)
+        WHERE hop2.paper_id IN $paper_ids
+          AND hop2 <> seed
+
+        // Return all three levels of facts
+        WITH seed, r1, hop1, r2, hop2
+
+        // Collect 1-hop facts
+        WITH seed,
+             collect(DISTINCT {
+                source_name: seed.entity_key,
+                source_type: [l IN labels(seed) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
+                source_description: seed.entity_description,
+                source_paper_id: seed.paper_id,
+                relation: type(r1),
+                relation_description: r1.relation_description,
+                target_name: hop1.entity_key,
+                target_type: [l IN labels(hop1) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
+                target_description: hop1.entity_description,
+                target_paper_id: hop1.paper_id
+             }) AS hop1_facts,
+             collect(DISTINCT {
+                source_name: hop1.entity_key,
+                source_type: [l IN labels(hop1) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
+                source_description: hop1.entity_description,
+                source_paper_id: hop1.paper_id,
+                relation: type(r2),
+                relation_description: r2.relation_description,
+                target_name: hop2.entity_key,
+                target_type: [l IN labels(hop2) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
+                target_description: hop2.entity_description,
+                target_paper_id: hop2.paper_id
+             }) AS hop2_facts
+
+        // Combine and unwind all facts
+        WITH hop1_facts + hop2_facts AS all_facts
+        UNWIND all_facts AS fact
+        WITH fact
+        WHERE fact.source_name IS NOT NULL
+        RETURN DISTINCT
+            fact.source_name         AS source_name,
+            fact.source_type         AS source_type,
+            fact.source_description  AS source_description,
+            fact.source_paper_id     AS source_paper_id,
+            fact.relation            AS relation,
+            fact.relation_description AS relation_description,
+            fact.target_name         AS target_name,
+            fact.target_type         AS target_type,
+            fact.target_description  AS target_description,
+            fact.target_paper_id     AS target_paper_id
+        """
+        params = {
+            "embedding": query_embedding,
+            "paper_ids": paper_ids,
+            "top_k": top_k,
+        }
+
+        data = self.structured_query(cypher, param_map=params)
+        if not data:
+            return []
+
+        results = []
+        for record in data:
+            results.append({
+                "source_name": record.get("source_name") or "",
+                "source_type": record.get("source_type") or "",
+                "source_description": record.get("source_description") or "",
+                "source_paper_id": record.get("source_paper_id") or "",
+                "relation": record.get("relation") or "",
+                "relation_description": record.get("relation_description") or "",
+                "target_name": record.get("target_name") or "",
+                "target_type": record.get("target_type") or "",
+                "target_description": record.get("target_description") or "",
+                "target_paper_id": record.get("target_paper_id") or "",
+            })
+
+        return results
+
+    def _retrieve_chunk_text(
+        self,
+        query_embedding: List[float],
+        paper_ids: List[str],
+        top_k: int,
+    ) -> List[Dict]:
+        """Retrieve original chunk text by following MENTIONS from seed entities.
+
+        Seed entities (from vector search) are linked to their source chunks
+        via (chunk)-[:MENTIONS]->(entity). We traverse that to get the original
+        paper text that produced each entity.
+        """
+        cypher = """
+        // Find seed entities via vector search
+        CALL db.index.vector.queryNodes('entity', $top_k, $embedding)
+        YIELD node AS seed, score
+        WHERE seed.paper_id IN $paper_ids
+        WITH seed, score
+        ORDER BY score DESC
+        LIMIT $top_k
+
+        // Traverse MENTIONS to get source chunks
+        MATCH (chunk:Chunk)-[:MENTIONS]->(seed)
+        WHERE chunk.paper_id IN $paper_ids
+        RETURN DISTINCT
+            chunk.text     AS text,
+            chunk.paper_id AS paper_id
+        LIMIT $chunk_limit
+        """
+        params = {
+            "embedding": query_embedding,
+            "paper_ids": paper_ids,
+            "top_k": top_k,
+            "chunk_limit": top_k,  # limit chunks to avoid overwhelming context
+        }
+
+        data = self.structured_query(cypher, param_map=params)
+        if not data:
+            return []
+
+        results = []
+        for record in data:
+            text = record.get("text") or ""
+            if text.strip():
+                results.append({
+                    "text": text.strip(),
+                    "paper_id": record.get("paper_id") or "",
+                })
+
+        return results

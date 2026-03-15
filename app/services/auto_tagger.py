@@ -2,7 +2,7 @@ import asyncio
 import concurrent.futures
 import json
 import logging
-from typing import Any, Callable, List, Optional, Union
+from typing import Any, List, Optional
 
 from llama_index.core.prompts import PromptTemplate
 from llama_index.core.schema import TransformComponent, BaseNode, MetadataMode

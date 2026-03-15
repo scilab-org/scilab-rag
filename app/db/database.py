@@ -6,7 +6,6 @@ from app.core.config import settings
 class Base(DeclarativeBase):
     pass
 
-
 engine = create_async_engine(
     settings.POSTGRESQL_URI,
     echo=False,

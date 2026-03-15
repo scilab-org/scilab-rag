@@ -1,12 +1,12 @@
+import json
 import os
 import tempfile
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
-
 from app.api.api_models.request import PaperAutoTagRequest
 from app.api.api_models.response import PaperParseResponse, PaperAutoTagResponse
 from app.core.config import settings
-from app.core.dependencies import get_llm
+from app.core.dependencies import get_summary_llm
 from app.services.auto_tagger import AutoTagger
 
 
@@ -22,22 +22,20 @@ async def parse_paper(file: UploadFile = File(...)):
     if not content.startswith(b"%PDF-"):
         raise HTTPException(400, "Invalid PDF file")
 
+    tmp_path = None
+
     try:
-        tmp_path = None
-       
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(content)
             tmp_path = tmp.name
 
-        from app.services.document_parser import parse_document
+        from app.services.document_parser import parse_document, parse_document_per_batch
 
-        text = parse_document(
+        text = parse_document_per_batch(
             tmp_path,
         )
-      
-        return PaperParseResponse(
-            parsedText=text,
-        )
+
+        return PaperParseResponse(parsedText=json.dumps(text))
 
     except Exception as e:
         raise HTTPException(
@@ -49,12 +47,12 @@ async def parse_paper(file: UploadFile = File(...)):
         if tmp_path and os.path.exists(tmp_path):
             os.remove(tmp_path)
 
-
 @router.post("/auto-tag", response_model=PaperAutoTagResponse)
 async def auto_tag_paper(request: PaperAutoTagRequest):
     text = request.parsedText
     existing_tags = request.existingTags or []
-    llm = get_llm()
+    # Use summary LLM for summarization and tag generation
+    summary_llm = get_summary_llm()
 
     try:
         from llama_index.core import Document
@@ -68,7 +66,7 @@ async def auto_tag_paper(request: PaperAutoTagRequest):
         documents = [Document(text=text)]
         nodes = splitter.get_nodes_from_documents(documents)
 
-        tagger = AutoTagger(llm=llm, existing_tags=existing_tags)
+        tagger = AutoTagger(llm=summary_llm, existing_tags=existing_tags)
         nodes_with_tags = tagger(nodes, show_progress=True)
 
         tags = nodes_with_tags[0].metadata.get("tags", []) if nodes_with_tags else []

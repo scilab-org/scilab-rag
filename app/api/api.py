@@ -1,11 +1,12 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
-from app.api.routers import papers, rag, system
+from app.api.routers import graph, papers, system
+from app.auth import get_current_user
 
-
+# api_router = APIRouter(dependencies=[Depends(get_current_user)])
 api_router = APIRouter()
 
 api_router.include_router(papers.router)
-api_router.include_router(rag.router)
+api_router.include_router(graph.router)
 api_router.include_router(system.router)
     
