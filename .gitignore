@@ -278,3 +278,5 @@ pip-selfcheck.json
 data/
 .opencode/
 nul
+
+session-*

@@ -25,7 +25,7 @@ from docling.datamodel.accelerator_options import AcceleratorDevice, Accelerator
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from app.core.config import settings
-from app.core.prompts import IMAGE_DESCRIPTION_PROMPT, FORMULA_DESCRIPTION_PROMPT
+from app.agents.ingest.prompts import IMAGE_DESCRIPTION_PROMPT, FORMULA_DESCRIPTION_PROMPT
 
 logger = logging.getLogger(__name__)
 

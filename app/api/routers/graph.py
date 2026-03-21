@@ -9,7 +9,7 @@ from app.api.api_models.response import ChatResponse, IngestResponse
 from app.core.dependencies import get_embed_llm, get_extract_llm, get_chat_llm
 from app.core.dependencies import get_graph_store
 
-from app.core.prompts import KG_TRIPLET_EXTRACT_TMPL
+from app.agents.ingest.prompts import KG_TRIPLET_EXTRACT_TMPL
 from app.domain.models import PaperInfo
 from app.helpers.utils import parse_fn
 
@@ -37,11 +37,11 @@ async def ingest_to_kg(request: IngestRequest):
         from llama_index.core import PropertyGraphIndex
         from llama_index.core.schema import BaseNode, TextNode
 
-        from app.services.extractor import GraphRAGExtractor
+        from app.agents.ingest.extractor import GraphRAGExtractor
 
         paper_info = PaperInfo(
-            paper_id=request.paperId,
-            paper_name=request.paperName,
+            paper_id=request.paper_id,
+            paper_name=request.paper_name,
         )
         
         # Use extract LLM for entity/relationship extraction
@@ -49,8 +49,8 @@ async def ingest_to_kg(request: IngestRequest):
         graph_store = get_graph_store()
         embed_model = get_embed_llm()
 
-        # parsedText is a JSON string produced by HybridChunker in the parse step
-        parsed = json.loads(request.parsedText)
+        # parsed_text is a JSON string produced by HybridChunker in the parse step
+        parsed = json.loads(request.parsed_text)
         nodes: list[BaseNode] = [
             TextNode(
                 text=chunk["text"],
@@ -81,59 +81,13 @@ async def ingest_to_kg(request: IngestRequest):
             kg_extractors=[],
         )
 
-        graph_store.create_same_as_links(request.paperId)
+        graph_store.create_same_as_links(request.paper_id)
 
         return IngestResponse(
-            paperId=request.paperId,
+            paper_id=request.paper_id,
             status="success",
             message="Document successfully ingested into Knowledge Graph",
         )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ingestion failed: {str(e)}")
-
-
-@router.post("/chat", response_model=ChatResponse)
-async def chat(request: ChatRequest):
-    """
-    Chat with the Knowledge Graph, scoped to a project's papers.
-    """
-    logger.info("Received chat request for project=%s", request.projectId)
-
-    try:
-        from app.services.query_engine import GraphRAGQueryEngine
-        from app.helpers.mock import get_paper_ids_by_project
-
-        graph_store = get_graph_store()
-        chat_llm = get_chat_llm()
-        embed_model = get_embed_llm()
-
-        # Resolve projectId → paper_ids
-        paper_ids = get_paper_ids_by_project(request.projectId)
-        if not paper_ids:
-            logger.warning("No papers found for project=%s", request.projectId)
-            return ChatResponse(
-                message=request.message,
-                answer="No papers are associated with this project yet. Please upload papers first.",
-            )
-
-        logger.debug("Resolved project=%s to %d papers", request.projectId, len(paper_ids))
-
-        query_engine = GraphRAGQueryEngine(
-            graph_store=graph_store,
-            embed_model=embed_model,
-            llm=chat_llm,
-        )
-
-        answer = await query_engine.acustom_query(request.message, paper_ids)
-
-        return ChatResponse(
-            message=request.message,
-            answer=answer,
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.exception("Chat failed: %s", e)
-        raise HTTPException(status_code=500, detail=f"Chat failed: {str(e)}")

@@ -52,8 +52,6 @@ class Settings(BaseSettings):
     LLM_TIMEOUT: float = 60.0
     
     # Document Processing
-    CHUNK_SIZE: int = 1500      
-    CHUNK_OVERLAP: int = 100
     HYBRID_MAX_TOKENS: int = 1500
     
     # Graph extraction (ceiling for dynamic per-chunk formula)
@@ -73,11 +71,6 @@ class Settings(BaseSettings):
     OPENROUTER_CHAT_MODEL: str = "openai/gpt-4o"
     OPENROUTER_EXTRACT_MODEL: str = "openai/gpt-4o-mini"
 
-    # Embedding Model Configuration
-    EMBED_MODEL_MAX_TOKENS: int = 512
-    EMBED_MODEL_CONTEXT_WINDOW: int = 2048
-    EMBED_MODEL_TEMPERATURE: float = 0.1
-
     # Image Model Configuration
     IMAGE_MODEL_MAX_TOKENS: int = 1024
     IMAGE_MODEL_CONTEXT_WINDOW: int = 4096
@@ -94,9 +87,12 @@ class Settings(BaseSettings):
     CHAT_MODEL_TEMPERATURE: float = 0.3
 
     # Extract Model Configuration
-    EXTRACT_MODEL_MAX_TOKENS: int = 3000
+    EXTRACT_MODEL_MAX_TOKENS: int = 6000
     EXTRACT_MODEL_CONTEXT_WINDOW: int = 12000
     EXTRACT_MODEL_TEMPERATURE: float = 0.1
+    
+    HISTORY_LIMIT: int = 10
+
     
 
 @lru_cache

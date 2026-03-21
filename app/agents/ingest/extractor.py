@@ -24,9 +24,10 @@ from llama_index.core.graph_stores.types import (
     Relation,
 )
 
+from app.agents.ingest.prompts import KG_TRIPLET_EXTRACT_TMPL
 from app.domain.models import PaperInfo
 from app.core.config import settings
-from app.helpers.utils import normalize_entity_key
+from app.helpers.utils import normalize_entity_key, normalize_rel_label
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +42,7 @@ class GraphRAGExtractor(TransformComponent):
     def __init__(
         self,
         llm: Optional[LLM] = None,
-        extract_prompt: Optional[Union[str, PromptTemplate]] = None,
+        extract_prompt: Optional[Union[str, PromptTemplate]] = KG_TRIPLET_EXTRACT_TMPL,
         parse_fn: Callable = default_parse_triplets_fn,
         num_workers: int = 2,
         max_path_per_chunks: int = settings.MAX_TRIPLETS_PER_CHUNK,
@@ -55,7 +56,7 @@ class GraphRAGExtractor(TransformComponent):
 
         super().__init__(
             llm=llm or Settings.llm,
-            extract_prompt=extract_prompt or DEFAULT_KG_TRIPLET_EXTRACT_PROMPT,
+            extract_prompt=extract_prompt,
             parse_fn=parse_fn,
             num_workers=num_workers,
             max_path_per_chunks=max_path_per_chunks,
@@ -187,11 +188,11 @@ class GraphRAGExtractor(TransformComponent):
 
             source_id = f"{self.paper_info.paper_id}::{sub}"
             target_id = f"{self.paper_info.paper_id}::{obj}"
-
+            normalized_rel = normalize_rel_label(rel)
             relation = Relation(
                 source_id=source_id,
                 target_id=target_id,
-                label=rel,
+                label=normalized_rel,
                 properties=  {
                     **relation_metadata,
                     "relation_description": description,

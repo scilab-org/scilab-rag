@@ -7,7 +7,8 @@ from typing import Dict, List
 from llama_index.core.llms import ChatMessage, LLM
 from llama_index.core.embeddings import BaseEmbedding
 
-from app.core.prompts import GRAPH_QA_SYSTEM_PROMPT, GRAPH_QA_USER_PROMPT
+from app.agents.chat.prompts import GRAPH_QA_SYSTEM_PROMPT, GRAPH_QA_USER_PROMPT
+from app.domain.models import ChatQuery
 from app.services.store import GraphRAGStore
 from app.core.config import settings
 
@@ -39,45 +40,55 @@ class GraphRAGQueryEngine:
         self.llm = llm
         self.similarity_top_k = similarity_top_k
 
-    async def acustom_query(self, query_str: str, paper_ids: List[str]) -> str:
+    async def acustom_query(self, chat_query: ChatQuery) -> str:
         """Answer a user question scoped to the given paper_ids."""
-        logger.info("Starting query: %s", query_str[:80])
+        logger.info("Starting query: %s", chat_query.query_str[:80])
 
         # Step 1: Embed the query
-        query_embedding = await self.embed_model.aget_query_embedding(query_str)
+        query_embedding = await self.embed_model.aget_query_embedding(chat_query.query_str)
 
         # Step 2 & 3: Retrieve graph context + chunk text (hybrid)
         context = self.graph_store.retrieve_scoped_context(
             query_embedding=query_embedding,
-            paper_ids=paper_ids,
+            paper_ids=chat_query.paper_ids,
             top_k=self.similarity_top_k,
         )
 
         graph_records = context.get("graph", [])
         chunk_records = context.get("chunks", [])
 
-        # if not graph_records and not chunk_records:
-        #     logger.info("No context retrieved for query")
-        #     return (
-        #         "I couldn't find relevant information in your papers for this question. "
-        #         "Could you try rephrasing, or make sure the relevant papers have been uploaded?"
-        #     )
-
         # Step 4: Format as natural paper notes
         context_text = self._format_context(graph_records, chunk_records)
         logger.debug("Formatted context length: %d chars", len(context_text))
 
         # Step 5: Single LLM call
-        user_message = GRAPH_QA_USER_PROMPT.format(
-            context=context_text,
-            question=query_str,
+        messages = []
+
+        # 1. System prompt — unchanged
+        messages.append(
+            ChatMessage(role="system", content=GRAPH_QA_SYSTEM_PROMPT)
         )
 
-        messages = [
-            ChatMessage(role="system", content=GRAPH_QA_SYSTEM_PROMPT),
-            ChatMessage(role="user", content=user_message),
-        ]
+        # 2. Summary note — only if it exists (older context, compressed)
+        if chat_query.summary:
+            messages.append(
+                ChatMessage(
+                    role="system",
+                    content=f"## Summary of earlier conversation\n{chat_query.summary}",
+                )
+            )
 
+        # 3. Raw history turns — last N messages in chronological order
+        for msg in chat_query.history:
+            messages.append(ChatMessage(role=msg.role, content=msg.content))
+
+        # 4. Current user question — always last, includes KG context
+        user_message = GRAPH_QA_USER_PROMPT.format(
+            context=context_text,
+            question=chat_query.query_str,
+        )
+        messages.append(ChatMessage(role="user", content=user_message))
+        print(messages)
         response = await self.llm.achat(messages)
         answer = re.sub(r"^assistant:\s*", "", str(response)).strip()
         logger.debug("Answer length: %d chars", len(answer))

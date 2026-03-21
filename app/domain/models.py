@@ -1,6 +1,14 @@
+from typing import Optional
+from dataclasses import dataclass, field
+
+@dataclass
 class PaperInfo:
-    def __init__(self, paper_id: str, paper_name: str):
-        self.paper_id = paper_id
-        self.paper_name = paper_name
+    paper_id: str
+    paper_name: str
 
-
+@dataclass
+class ChatQuery:
+    query_str: str
+    paper_ids: list[str]
+    history: list = field(default_factory=list)
+    summary: Optional[str] = None

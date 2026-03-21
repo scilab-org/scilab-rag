@@ -10,7 +10,7 @@ from llama_index.core.llms.llm import LLM
 from llama_index.core import Settings
 from llama_index.core.async_utils import run_jobs
 from llama_index.core.prompts import PromptTemplate
-from app.core.prompts import CHUNK_SUMMARY_PROMPT, GLOBAL_SUMMARY_PROMPT, TAG_FROM_SUMMARY_PROMPT
+from app.agents.tagger.prompts import CHUNK_SUMMARY_PROMPT, GLOBAL_SUMMARY_PROMPT, TAG_FROM_SUMMARY_PROMPT
 
 logger = logging.getLogger(__name__)
 
