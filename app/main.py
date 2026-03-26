@@ -28,11 +28,35 @@ async def lifespan(app: FastAPI):
     # Startup: Initialize connections
     logger.info("Starting Scilab-AI Service...")
     logger.info("Neo4j URI: %s", settings.NEO4J_URI)
-    
+
+    # --- RabbitMQ consumer ---
+    from app.messaging import connection as rmq_connection
+    from app.messaging.consumer import start_consumer
+
+    try:
+        await rmq_connection.connect()
+        consumer_tag = await start_consumer()
+        logger.info(
+            "RabbitMQ consumer is running (tag=%s). "
+            "Queue '%s' should be bound to exchange '%s'.",
+            consumer_tag,
+            settings.RABBITMQ_INGEST_QUEUE,
+            settings.RABBITMQ_INGEST_EXCHANGE,
+        )
+    except Exception:
+        logger.exception(
+            "Failed to start RabbitMQ consumer – the service will still "
+            "serve HTTP requests but ingestion via messaging is unavailable."
+        )
+
     yield
-    
-    # Shutdown: Cleanup temp files
+
+    # Shutdown: close RabbitMQ
     logger.info("Shutting down Scilab-AI Service...")
+    try:
+        await rmq_connection.close()
+    except Exception:
+        logger.exception("Error closing RabbitMQ connection.")
 
 app = FastAPI(
     title="Scilab-AI Service",

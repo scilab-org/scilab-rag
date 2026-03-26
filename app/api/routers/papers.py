@@ -29,11 +29,9 @@ async def parse_paper(file: UploadFile = File(...)):
             tmp.write(content)
             tmp_path = tmp.name
 
-        from app.agents.ingest.document_parser import parse_document, parse_document_per_batch
-
-        text = parse_document_per_batch(
-            tmp_path,
-        )
+        from app.agents.ingest.document_parser import parse_document_per_batch
+        import asyncio
+        text = await asyncio.to_thread(parse_document_per_batch, tmp_path)
 
         return PaperParseResponse(parsed_text=json.dumps(text))
 

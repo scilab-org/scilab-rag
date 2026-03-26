@@ -13,16 +13,7 @@ from keycloak import KeycloakOpenID
 @lru_cache
 def get_llm() -> OpenRouter:
     """Get cached LLM instance."""
-    llm = OpenRouter(
-        api_base=settings.OPENROUTER_API_URL_BASE,
-        model=settings.OPENROUTER_CHAT_MODEL,
-        api_key=settings.OPENROUTER_API_KEY,
-        max_tokens=settings.LLM_MAX_TOKENS,
-        context_window=settings.LLM_CONTEXT_WINDOW,
-        temperature=settings.LLM_TEMPERATURE,
-        timeout=settings.LLM_TIMEOUT,
-    )
-    # Set as global default
+    llm = get_chat_llm()
     LlamaSettings.llm = llm
     return llm
 

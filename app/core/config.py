@@ -46,23 +46,16 @@ class Settings(BaseSettings):
     NEO4J_DATABASE: str = "neo4j"
     
     # LLM Configuration
-    LLM_MAX_TOKENS: int = 512
-    LLM_CONTEXT_WINDOW: int = 2048
-    LLM_TEMPERATURE: float = 0.1
     LLM_TIMEOUT: float = 60.0
     
     # Document Processing
-    HYBRID_MAX_TOKENS: int = 1500
+    HYBRID_MAX_TOKENS: int = 6000
     
     # Graph extraction (ceiling for dynamic per-chunk formula)
-    MAX_TRIPLETS_PER_CHUNK: int = 20
-
-    # Auto tagging
-    SUMMARY_CHUNK_SIZE: int = 1500
-    SUMMARY_CHUNK_OVERLAP: int = 20
+    MAX_TRIPLETS_PER_CHUNK: int = 30
     
     # Query Engine
-    SIMILARITY_TOP_K: int = 10
+    SIMILARITY_TOP_K: int = 15
 
     # OpenRouter Models
     OPENROUTER_EMBED_MODEL: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
@@ -72,28 +65,35 @@ class Settings(BaseSettings):
     OPENROUTER_EXTRACT_MODEL: str = "openai/gpt-4o-mini"
 
     # Image Model Configuration
-    IMAGE_MODEL_MAX_TOKENS: int = 1024
-    IMAGE_MODEL_CONTEXT_WINDOW: int = 4096
+    IMAGE_MODEL_MAX_TOKENS: int = 2024
+    IMAGE_MODEL_CONTEXT_WINDOW: int = 128000
     IMAGE_MODEL_TEMPERATURE: float = 0.2
 
     # Summary Model Configuration
-    SUMMARY_MODEL_MAX_TOKENS: int = 1024
-    SUMMARY_MODEL_CONTEXT_WINDOW: int = 2048
+    SUMMARY_MODEL_MAX_TOKENS: int = 4096
+    SUMMARY_MODEL_CONTEXT_WINDOW: int = 100000
     SUMMARY_MODEL_TEMPERATURE: float = 0.1
 
     # Chat Model Configuration
-    CHAT_MODEL_MAX_TOKENS: int = 4096
-    CHAT_MODEL_CONTEXT_WINDOW: int = 16384
+    CHAT_MODEL_MAX_TOKENS: int = 16000
+    CHAT_MODEL_CONTEXT_WINDOW: int = 128000
     CHAT_MODEL_TEMPERATURE: float = 0.3
 
     # Extract Model Configuration
-    EXTRACT_MODEL_MAX_TOKENS: int = 6000
-    EXTRACT_MODEL_CONTEXT_WINDOW: int = 12000
+    EXTRACT_MODEL_MAX_TOKENS: int = 8000  
+    EXTRACT_MODEL_CONTEXT_WINDOW: int = 128000
     EXTRACT_MODEL_TEMPERATURE: float = 0.1
     
     HISTORY_LIMIT: int = 10
 
-    
+    # RabbitMQ
+    RABBITMQ_URI: str = "amqp://guest:guest@localhost:5672/"
+
+    # RabbitMQ exchange / queue names 
+    RABBITMQ_INGEST_EXCHANGE: str = "EventSourcing.Events.Lab:PaperIngestionEvent"
+    RABBITMQ_INGEST_QUEUE: str = "paper-ingestion"
+    RABBITMQ_COMPLETED_EXCHANGE: str = "EventSourcing.Events.Lab:PaperIngestionCompletedEvent"
+
 
 @lru_cache
 def get_settings() -> Settings:

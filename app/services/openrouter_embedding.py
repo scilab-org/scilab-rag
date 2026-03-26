@@ -52,7 +52,7 @@ class OpenRouterEmbedding(BaseEmbedding):
         description="Rate limit: requests per minute",
     )
     timeout: float = Field(
-        default=60.0,
+        default=120.0,
         description="Request timeout in seconds",
     )
 
