@@ -62,10 +62,11 @@ async def ingest_paper_to_kg(
         extract_llm = get_extract_llm()
         graph_store = get_graph_store()
         embed_model = get_embed_llm()
-        unescaped_text = parsed_text.replace('\\"', '"').replace('\\\\','\\')
+        # unescaped_text = parsed_text.replace('\\"', '"').replace('\\\\','\\')
         
-        parsed = json.loads(unescaped_text)
-            
+        parsed = json.loads(parsed_text)
+        if isinstance(parsed, str):
+            parsed = json.loads(parsed)
         nodes: list[BaseNode] = [
             TextNode(
                 text=chunk["text"],
