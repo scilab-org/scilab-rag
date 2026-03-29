@@ -1,54 +1,42 @@
 """
 API request schemas.
-"""
 
+All fields are snake_case internally; the alias_generator on CamelCaseModel
+automatically exposes them as camelCase in the JSON wire format.
+"""
+import uuid
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import Field
 
+from app.api.api_models import CamelCaseModel
 
-class PaperAutoTagRequest(BaseModel):   
-    parsedText: str = Field(
+class PaperAutoTagRequest(CamelCaseModel):
+    parsed_text: str = Field(
         ...,
         min_length=100,
-        description="The extracted text from the PDF"
+        description="The extracted text from the PDF",
     )
-    
-    existingTags: list[str] | None = Field(
+    existing_tags: list[str] | None = Field(
+        default=None,
         description="Existing tags for the paper (optional)",
-        default=None,
-    ) 
+    )
 
-class IngestRequest(BaseModel):
+class IngestRequest(CamelCaseModel):
     """Request to ingest a document into the Knowledge Graph."""
-    
-    documentId: str = Field(..., description="ID of the uploaded PDF document")
-    doPictureDescription: bool = Field(
-        default=False,
-        description="Enable AI-generated descriptions for images in the PDF",
-    )
-    doFormulaEnrichment: bool = Field(
-        default=False,
-        description="Enable formula enrichment for mathematical expressions",
-    )
-    maxTripletsPerChunk: Optional[int] = Field(
-        default=None,
-        description="Maximum entity-relation triplets to extract per chunk",
+
+    paper_id: str = Field(..., description="ID of the uploaded PDF document")
+    paper_name: str = Field(..., description="Original filename of the PDF")
+    parsed_text: str = Field(
+        ...,
+        description="JSON string of parsed chunks from the PDF (output of /papers/parse)",
     )
 
+class ChatRequest(CamelCaseModel):
+    message: str = Field(..., min_length=1, max_length=8000)
+    session_id: Optional[uuid.UUID] = None
+    project_id: Optional[str] = None
+    paper_ids: list[str] = Field(default_factory=list, description="Paper IDs to scope the query. Empty list queries without paper filtering.")
 
-class ChatRequest(BaseModel):
-    """Request to chat with the Knowledge Graph."""
-
-    message: str = Field(..., description="The question to ask", min_length=1)
-    similarityTopK: Optional[int] = Field(
-        default=None,
-        description="Number of similar entities to retrieve",
-    )
-
-
-class SystemInfoRequest(BaseModel):
-    """Request to create or update system info."""
-
-    key: str = Field(..., description="Info key", min_length=1, max_length=255)
-    value: Optional[str] = Field(None, description="Info value")
+class SessionRenameRequest(CamelCaseModel):
+    title: str = Field(..., min_length=1, max_length=255)

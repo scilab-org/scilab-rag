@@ -1,3 +1,5 @@
+from collections.abc import AsyncGenerator
+
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 from sqlalchemy.orm import DeclarativeBase
 from app.core.config import settings
@@ -5,7 +7,6 @@ from app.core.config import settings
 
 class Base(DeclarativeBase):
     pass
-
 
 engine = create_async_engine(
     settings.POSTGRESQL_URI,
@@ -18,7 +19,11 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
-
-async def get_db() -> AsyncSession:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with AsyncSessionLocal() as session:
-        yield session
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise
