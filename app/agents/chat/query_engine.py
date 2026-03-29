@@ -2,7 +2,7 @@
 
 import logging
 import re
-from typing import Dict, List
+from typing import AsyncGenerator, Dict, List, Tuple
 
 from llama_index.core.llms import ChatMessage, LLM
 from llama_index.core.embeddings import BaseEmbedding
@@ -24,8 +24,9 @@ class GraphRAGQueryEngine:
     1. Embed the user query
     2. Vector search scoped to paper_ids + 2-hop neighbor traversal
     3. Retrieve original chunk text via MENTIONS relationships
-    4. Format everything as natural "paper notes"
-    5. Single LLM call (system: HyperDataLab Assistant, user: context + question)
+    4. Resolve paper_id → paper_name for human-readable attribution
+    5. Format everything as natural "paper notes"
+    6. Single LLM call (system: HyperDataLab Assistant, user: context + question)
     """
 
     def __init__(
@@ -40,8 +41,15 @@ class GraphRAGQueryEngine:
         self.llm = llm
         self.similarity_top_k = similarity_top_k
 
-    async def acustom_query(self, chat_query: ChatQuery) -> str:
-        """Answer a user question scoped to the given paper_ids."""
+    async def _build_messages(
+        self, chat_query: ChatQuery,
+    ) -> Tuple[List[ChatMessage], Dict[str, str]]:
+        """Shared: embed query, retrieve context, resolve paper names,
+        build LLM message list.
+
+        Returns:
+            (messages, paper_names) where paper_names is {paper_id: paper_name}.
+        """
         logger.info("Starting query: %s", chat_query.query_str[:80])
 
         # Step 1: Embed the query
@@ -57,19 +65,28 @@ class GraphRAGQueryEngine:
         graph_records = context.get("graph", [])
         chunk_records = context.get("chunks", [])
 
-        # Step 4: Format as natural paper notes
-        context_text = self._format_context(graph_records, chunk_records)
+        # Step 4: Resolve paper_id → paper_name
+        paper_names = self.graph_store.resolve_paper_names(chat_query.paper_ids)
+
+        # Step 5: Format as natural paper notes
+        context_text = self._format_context(graph_records, chunk_records, paper_names)
         logger.debug("Formatted context length: %d chars", len(context_text))
 
-        # Step 5: Single LLM call
-        messages = []
+        # Build papers-in-scope section
+        if paper_names:
+            papers_in_scope = "\n".join(
+                f"- {name}" for name in paper_names.values()
+            )
+        else:
+            papers_in_scope = "(No papers resolved for this conversation.)"
 
-        # 1. System prompt — unchanged
+        # Step 6: Build message list
+        messages: List[ChatMessage] = []
+
         messages.append(
             ChatMessage(role="system", content=GRAPH_QA_SYSTEM_PROMPT)
         )
 
-        # 2. Summary note — only if it exists (older context, compressed)
         if chat_query.summary:
             messages.append(
                 ChatMessage(
@@ -78,22 +95,53 @@ class GraphRAGQueryEngine:
                 )
             )
 
-        # 3. Raw history turns — last N messages in chronological order
         for msg in chat_query.history:
             messages.append(ChatMessage(role=msg.role, content=msg.content))
 
-        # 4. Current user question — always last, includes KG context
         user_message = GRAPH_QA_USER_PROMPT.format(
+            papers_in_scope=papers_in_scope,
             context=context_text,
             question=chat_query.query_str,
         )
         messages.append(ChatMessage(role="user", content=user_message))
-        print(messages)
+
+        return messages, paper_names
+
+    async def acustom_query(
+        self, chat_query: ChatQuery,
+    ) -> Tuple[str, Dict[str, str]]:
+        """Answer a user question scoped to the given paper_ids.
+
+        Returns:
+            (answer, paper_names) where paper_names is {paper_id: paper_name}.
+        """
+        messages, paper_names = await self._build_messages(chat_query)
+
         response = await self.llm.achat(messages)
         answer = re.sub(r"^assistant:\s*", "", str(response)).strip()
         logger.debug("Answer length: %d chars", len(answer))
 
-        return answer
+        return answer, paper_names
+
+    async def astream_query(
+        self, chat_query: ChatQuery,
+    ) -> Tuple[AsyncGenerator[str, None], Dict[str, str]]:
+        """Stream answer tokens for a user question scoped to the given paper_ids.
+
+        Returns:
+            (token_generator, paper_names) — the generator yields token delta
+            strings as they arrive from the LLM.
+        """
+        messages, paper_names = await self._build_messages(chat_query)
+
+        async def _generate() -> AsyncGenerator[str, None]:
+            response = await self.llm.astream_chat(messages)
+            async for delta in response:
+                token = delta.delta or ""
+                if token:
+                    yield token
+
+        return _generate(), paper_names
 
     # ── Internal helpers ─────────────────────────────────────────────────────
 
@@ -101,32 +149,52 @@ class GraphRAGQueryEngine:
     def _format_context(
         graph_records: List[Dict],
         chunk_records: List[Dict],
+        paper_names: Dict[str, str],
     ) -> str:
         """Format retrieved graph records + chunk text as natural-language
         paper notes. No graph syntax (arrows, entity types, etc.) is exposed.
-
         Structure:
         1. "Key findings from papers" — structured facts from graph
-        2. "Relevant excerpts" — original paper text from chunks
         """
         sections = []
 
         # ── Part 1: Graph-derived facts ──────────────────────────────────────
         if graph_records:
-            graph_text = GraphRAGQueryEngine._format_graph_records(graph_records)
+            graph_text = GraphRAGQueryEngine._format_graph_records(
+                graph_records, paper_names,
+            )
             if graph_text:
                 sections.append("### Key findings from papers\n" + graph_text)
 
         # ── Part 2: Original chunk text ──────────────────────────────────────
         if chunk_records:
-            chunk_text = GraphRAGQueryEngine._format_chunks(chunk_records)
+            chunk_text = GraphRAGQueryEngine._format_chunks(
+                chunk_records, paper_names,
+            )
             if chunk_text:
-                sections.append("### Relevant excerpts from papers\n" + chunk_text)
+                sections.append("### Relevant original text from papers\n" + chunk_text)
 
         return "\n\n".join(sections) if sections else "(No relevant notes found.)"
 
     @staticmethod
-    def _format_graph_records(records: List[Dict]) -> str:
+    def _resolve_paper_label(
+        paper_id: str,
+        paper_name_from_record: str,
+        paper_names: Dict[str, str],
+    ) -> str:
+        """Return a human-readable paper label. Never returns a UUID.
+        Returns empty string if the paper name cannot be resolved.
+        """
+        return (
+            paper_name_from_record
+            or paper_names.get(paper_id, "")
+        )
+
+    @staticmethod
+    def _format_graph_records(
+        records: List[Dict],
+        paper_names: Dict[str, str],
+    ) -> str:
         """Format graph records as grouped natural-language notes.
         Filters out SAME_AS (structural link, not a user-facing fact).
         """
@@ -139,7 +207,8 @@ class GraphRAGQueryEngine:
             relation = r.get("relation") or ""
             rel_desc = r.get("relation_description") or ""
             src_desc = r.get("source_description") or ""
-            src_paper = r.get("source_paper_id") or ""
+            src_paper_id = r.get("source_paper_id") or ""
+            src_paper_name = r.get("source_paper_name") or ""
 
             if not source:
                 continue
@@ -173,7 +242,10 @@ class GraphRAGQueryEngine:
             seen.add(dedup_key)
 
             note = ". ".join(parts)
-            group_key = f"{source} (paper {src_paper})" if src_paper else source
+            paper_label = GraphRAGQueryEngine._resolve_paper_label(
+                src_paper_id, src_paper_name, paper_names,
+            )
+            group_key = f"{source} ({paper_label})" if paper_label else source
             grouped.setdefault(group_key, []).append(note)
 
         lines = []
@@ -185,13 +257,25 @@ class GraphRAGQueryEngine:
         return "\n".join(lines)
 
     @staticmethod
-    def _format_chunks(chunks: List[Dict]) -> str:
-        """Format original paper text chunks."""
+    def _format_chunks(
+        chunks: List[Dict],
+        paper_names: Dict[str, str],
+    ) -> str:
+        """Format original paper text chunks.
+        Uses paper name for attribution; never exposes UUIDs.
+        """
         lines = []
         for i, chunk in enumerate(chunks, 1):
             text = chunk.get("text", "")
             paper_id = chunk.get("paper_id", "")
-            header = f"[Excerpt {i}, paper {paper_id}]" if paper_id else f"[Excerpt {i}]"
-            lines.append(f"{header}\n{text}")
+            chunk_paper_name = chunk.get("paper_name", "")
+
+            paper_label = GraphRAGQueryEngine._resolve_paper_label(
+                paper_id, chunk_paper_name, paper_names,
+            )
+            if paper_label:
+                header = f"[{paper_label}]"
+            formated_line = f"{header}\n{text}" if header else text
+            lines.append(formated_line)
 
         return "\n\n".join(lines)

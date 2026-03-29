@@ -49,13 +49,17 @@ class ChatSessionRepository:
     async def list_by_user(
         self,
         user_id: str,
+        project_id: str,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ChatSession]:
-        """Return sessions ordered by most recently updated."""
+        """Return sessions for a user scoped to a project, most recently updated first."""
         result = await self._db.execute(
             select(ChatSession)
-            .where(ChatSession.user_id == user_id)
+            .where(
+                ChatSession.user_id == user_id,
+                ChatSession.project_id == project_id,
+            )
             .order_by(ChatSession.updated_at.desc())
             .limit(limit)
             .offset(offset)

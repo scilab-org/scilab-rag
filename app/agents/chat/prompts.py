@@ -108,6 +108,9 @@ Do not debate or attempt to override the user's observation.
 """
 
 GRAPH_QA_USER_PROMPT = """\
+## Papers in your library for this conversation
+{papers_in_scope}
+
 ## Paper Notes
 {context}
 

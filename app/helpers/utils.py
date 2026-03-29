@@ -6,6 +6,7 @@ import json
 import re
 from typing import List, Tuple
 
+from llama_index.core.llms import ChatMessage, LLM
 
 def parse_fn(response_str: str) -> Tuple[List, List]:
     """
@@ -96,3 +97,16 @@ def normalize_rel_label(label: str) -> str:
     label = re.sub(r'[^A-Za-z0-9_]', '', label)
     return label.upper()
 
+
+async def generate_chat_title(llm: LLM, message: str) -> str:
+    prompt = (
+        "Generate a concise (max 7 words) scientific chat session title for the following message.\n\n"
+        f"Message: \"{message.strip()}\"\n\nTitle:"
+    )
+    response = await llm.achat([ChatMessage(role="user", content=prompt)])
+    raw_title = str(response).strip().strip('"')
+    words = re.split(r"\s+", raw_title)
+    cut_title = " ".join(words[:7]).strip()
+    cut_title = re.sub(r'[!?.:,;\-]+$','', cut_title).strip()
+    final_title = cut_title[:1].upper() + cut_title[1:]
+    return final_title

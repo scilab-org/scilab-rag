@@ -184,6 +184,7 @@ class GraphRAGExtractor(TransformComponent):
 
         relation_metadata = node.metadata.copy()
         relation_metadata["paper_id"] = self.paper_info.paper_id
+        relation_metadata["paper_name"] = self.paper_info.paper_name
         for sub, obj, rel, description in entities_relationship:
 
             source_id = f"{self.paper_info.paper_id}::{sub}"
@@ -201,7 +202,8 @@ class GraphRAGExtractor(TransformComponent):
 
             existing_relations.append(relation)
 
-        node.metadata["paper_id"] = self.paper_info.paper_id        
+        node.metadata["paper_id"] = self.paper_info.paper_id      
+        node.metadata["paper_name"] = self.paper_info.paper_name
         node.metadata[KG_NODES_KEY] = existing_nodes
         node.metadata[KG_RELATIONS_KEY] = existing_relations
         

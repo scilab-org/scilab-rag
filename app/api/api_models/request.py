@@ -36,6 +36,7 @@ class ChatRequest(CamelCaseModel):
     message: str = Field(..., min_length=1, max_length=8000)
     session_id: Optional[uuid.UUID] = None
     project_id: Optional[str] = None
+    paper_ids: list[str] = Field(default_factory=list, description="Paper IDs to scope the query. Empty list queries without paper filtering.")
 
 class SessionRenameRequest(CamelCaseModel):
     title: str = Field(..., min_length=1, max_length=255)

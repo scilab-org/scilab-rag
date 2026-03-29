@@ -25,6 +25,13 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         # so we don't break the constructor contract during migration.
         kwargs.pop("llm", None)
         super().__init__(*args, **kwargs)
+        try:
+            self.structured_query(
+                "CREATE VECTOR INDEX chunk_embedding IF NOT EXISTS "
+                "FOR (c:Chunk) ON c.embedding"
+            )
+        except Exception as e:
+            logger.warning("Could not create chunk vector index: %s", e)
 
     # ── Ingest: SAME_AS linking ──────────────────────────────────────────────
 
@@ -54,6 +61,34 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         )
         return created
 
+    # ── Query: paper name resolution ────────────────────────────────────────
+
+    def resolve_paper_names(self, paper_ids: List[str]) -> Dict[str, str]:
+        """Resolve paper_id → paper_name from existing entity nodes.
+
+        Returns a dict like ``{"uuid-1": "My Paper Title", ...}``.
+        Papers whose entities lack ``paper_name`` are silently omitted.
+        """
+        if not paper_ids:
+            return {}
+
+        cypher = """
+        MATCH (n:__Entity__)
+        WHERE n.paper_id IN $paper_ids
+          AND n.paper_name IS NOT NULL
+          AND n.paper_name <> ''
+        RETURN DISTINCT n.paper_id AS paper_id, n.paper_name AS paper_name
+        """
+        data = self.structured_query(cypher, param_map={"paper_ids": paper_ids})
+        if not data:
+            return {}
+
+        return {
+            row["paper_id"]: row["paper_name"]
+            for row in data
+            if row.get("paper_id") and row.get("paper_name")
+        }
+
     # ── Query: scoped 2-hop retrieval + chunk text ───────────────────────────
 
     def retrieve_scoped_context(
@@ -74,14 +109,15 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 "graph": [  # structured entity/relation records
                     {
                         "source_name", "source_type", "source_description",
-                        "source_paper_id", "relation", "relation_description",
+                        "source_paper_id", "source_paper_name",
+                        "relation", "relation_description",
                         "target_name", "target_type", "target_description",
-                        "target_paper_id",
+                        "target_paper_id", "target_paper_name",
                     },
                     ...
                 ],
                 "chunks": [  # original paper text from source chunks
-                    {"text": str, "paper_id": str},
+                    {"text": str, "paper_id": str, "paper_name": str},
                     ...
                 ],
             }
@@ -134,24 +170,28 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 source_type: [l IN labels(seed) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 source_description: seed.entity_description,
                 source_paper_id: seed.paper_id,
+                source_paper_name: seed.paper_name,
                 relation: type(r1),
                 relation_description: r1.relation_description,
                 target_name: hop1.entity_key,
                 target_type: [l IN labels(hop1) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 target_description: hop1.entity_description,
-                target_paper_id: hop1.paper_id
+                target_paper_id: hop1.paper_id,
+                target_paper_name: hop1.paper_name
              }) AS hop1_facts,
              collect(DISTINCT {
                 source_name: hop1.entity_key,
                 source_type: [l IN labels(hop1) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 source_description: hop1.entity_description,
                 source_paper_id: hop1.paper_id,
+                source_paper_name: hop1.paper_name,
                 relation: type(r2),
                 relation_description: r2.relation_description,
                 target_name: hop2.entity_key,
                 target_type: [l IN labels(hop2) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 target_description: hop2.entity_description,
-                target_paper_id: hop2.paper_id
+                target_paper_id: hop2.paper_id,
+                target_paper_name: hop2.paper_name
              }) AS hop2_facts
 
         // Combine and unwind all facts
@@ -160,16 +200,18 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         WITH fact
         WHERE fact.source_name IS NOT NULL
         RETURN DISTINCT
-            fact.source_name         AS source_name,
-            fact.source_type         AS source_type,
-            fact.source_description  AS source_description,
-            fact.source_paper_id     AS source_paper_id,
-            fact.relation            AS relation,
+            fact.source_name          AS source_name,
+            fact.source_type          AS source_type,
+            fact.source_description   AS source_description,
+            fact.source_paper_id      AS source_paper_id,
+            fact.source_paper_name    AS source_paper_name,
+            fact.relation             AS relation,
             fact.relation_description AS relation_description,
-            fact.target_name         AS target_name,
-            fact.target_type         AS target_type,
-            fact.target_description  AS target_description,
-            fact.target_paper_id     AS target_paper_id
+            fact.target_name          AS target_name,
+            fact.target_type          AS target_type,
+            fact.target_description   AS target_description,
+            fact.target_paper_id      AS target_paper_id,
+            fact.target_paper_name    AS target_paper_name
         """
         params = {
             "embedding": query_embedding,
@@ -188,12 +230,14 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 "source_type": record.get("source_type") or "",
                 "source_description": record.get("source_description") or "",
                 "source_paper_id": record.get("source_paper_id") or "",
+                "source_paper_name": record.get("source_paper_name") or "",
                 "relation": record.get("relation") or "",
                 "relation_description": record.get("relation_description") or "",
                 "target_name": record.get("target_name") or "",
                 "target_type": record.get("target_type") or "",
                 "target_description": record.get("target_description") or "",
                 "target_paper_id": record.get("target_paper_id") or "",
+                "target_paper_name": record.get("target_paper_name") or "",
             })
 
         return results
@@ -204,36 +248,23 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         paper_ids: List[str],
         top_k: int,
     ) -> List[Dict]:
-        """Retrieve original chunk text by following MENTIONS from seed entities.
-
-        Seed entities (from vector search) are linked to their source chunks
-        via (chunk)-[:MENTIONS]->(entity). We traverse that to get the original
-        paper text that produced each entity.
-        """
         cypher = """
-        // Find seed entities via vector search
-        CALL db.index.vector.queryNodes('entity', $top_k, $embedding)
-        YIELD node AS seed, score
-        WHERE seed.paper_id IN $paper_ids
-        WITH seed, score
+        CALL db.index.vector.queryNodes('chunk_embedding', $top_k, $embedding)
+        YIELD node AS chunk, score
+        WHERE chunk.paper_id IN $paper_ids
+        WITH chunk, score
         ORDER BY score DESC
         LIMIT $top_k
-
-        // Traverse MENTIONS to get source chunks
-        MATCH (chunk:Chunk)-[:MENTIONS]->(seed)
-        WHERE chunk.paper_id IN $paper_ids
         RETURN DISTINCT
-            chunk.text     AS text,
-            chunk.paper_id AS paper_id
-        LIMIT $chunk_limit
+            chunk.text       AS text,
+            chunk.paper_id   AS paper_id,
+            chunk.paper_name AS paper_name
         """
         params = {
             "embedding": query_embedding,
             "paper_ids": paper_ids,
             "top_k": top_k,
-            "chunk_limit": top_k,  # limit chunks to avoid overwhelming context
         }
-
         data = self.structured_query(cypher, param_map=params)
         if not data:
             return []
@@ -245,6 +276,6 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 results.append({
                     "text": text.strip(),
                     "paper_id": record.get("paper_id") or "",
+                    "paper_name": record.get("paper_name") or "",
                 })
-
         return results
