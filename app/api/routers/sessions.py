@@ -5,7 +5,7 @@ All endpoints require a valid Keycloak JWT.
 """
 
 import uuid
-from typing import Annotated
+from typing import Annotated, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,14 +36,19 @@ async def list_sessions(
     user: CurrentUser,
     db: DB,
     projectId: str = Query(..., description="Project ID to filter sessions"),
+    sectionId: Optional[str] = Query(None, description="Section ID to filter sessions (optional)"),
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
 ):
-    """List all sessions for the authenticated user scoped to a project, most recent first."""
+    """List all sessions for the authenticated user scoped to a project, most recent first.
+    
+    If sectionId is provided, filters to sessions for that specific section.
+    """
     repo = ChatSessionRepository(db)
     sessions = await repo.list_by_user(
         user_id=user.user_id,
         project_id=projectId,
+        section_id=sectionId,
         limit=limit,
         offset=offset,
     )

@@ -195,9 +195,7 @@ class GraphRAGQueryEngine:
         records: List[Dict],
         paper_names: Dict[str, str],
     ) -> str:
-        """Format graph records as grouped natural-language notes.
-        Filters out SAME_AS (structural link, not a user-facing fact).
-        """
+        """Format graph records as grouped natural-language notes."""
         seen = set()
         grouped: dict[str, list[str]] = {}
 
@@ -211,10 +209,6 @@ class GraphRAGQueryEngine:
             src_paper_name = r.get("source_paper_name") or ""
 
             if not source:
-                continue
-
-            # Skip SAME_AS — it's a structural link, not a fact
-            if relation == "SAME_AS":
                 continue
 
             # Build a natural note for this fact

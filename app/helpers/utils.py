@@ -33,6 +33,8 @@ def parse_fn(response_str: str) -> Tuple[List, List]:
         return entities, relationships
     
     json_str = match.group(0)
+    json_str = json_str.replace("{{", "{").replace("}}", "}")
+
     
     # Parse JSON
     try:
@@ -66,28 +68,6 @@ def normalize_entity_name(name: str) -> str:
     name = re.sub(r"[^a-z0-9_]", "", name)  # remove punctuation
     return name
 
-
-def normalize_entity_key(name: str) -> str:
-    """Light normalization for SAME_AS matching across papers.
-    
-    Only normalizes case and separators. Preserves word structure
-    so that nuance is not lost.
-    
-    Examples:
-        "Transformer"       -> "transformer"
-        "Transformer Model" -> "transformer model"  (different from "transformer")
-        "SARS-CoV-2"        -> "sars cov 2"
-        "sars-cov-2"        -> "sars cov 2"         (matches above)
-        "Self-Attention"     -> "self attention"
-        "Self Attention"     -> "self attention"     (matches above)
-        "COVID-19"           -> "covid 19"
-    """
-    if not name:
-        return ""
-    name = name.strip().lower()
-    name = re.sub(r"[\s\-_]+", " ", name)  # unify separators to single space
-    name = name.strip()
-    return name
 
 def normalize_rel_label(label: str) -> str:
     """Normalise to UPPER_SNAKE_CASE for Neo4j relationship type consistency."""

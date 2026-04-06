@@ -9,7 +9,7 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Optional
-
+ 
 logger = logging.getLogger(__name__)
 
 
@@ -85,18 +85,17 @@ async def ingest_paper_to_kg(
             paper_info=paper_info,
         )
 
-        nodes_with_kg = extractor(nodes, show_progress=True)
-        index = await asyncio.to_thread(
-            PropertyGraphIndex,
-            nodes=nodes_with_kg,
+        index = PropertyGraphIndex(
+            nodes=[],
+            kg_extractors=[extractor],
             property_graph_store=graph_store,
             embed_model=embed_model,
             show_progress=True,
             llm=extract_llm,
-            kg_extractors=[],
         )
-
-        graph_store.create_same_as_links(paper_id)
+        await asyncio.to_thread(
+            index.build_index_from_nodes, nodes  
+        )
 
         logger.info("Ingestion succeeded for paper %s (%s)", paper_id, paper_name)
         return IngestionResult(

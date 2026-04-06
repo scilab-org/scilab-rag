@@ -45,3 +45,6 @@ tiktoken==0.9.0
 
 #rabbitmq
 aio-pika==9.4.0
+
+# LaTeX validation
+pylatexenc==2.10

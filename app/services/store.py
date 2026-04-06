@@ -1,4 +1,4 @@
-"""GraphRAG Store with paper-scoped entities and SAME_AS cross-paper linking."""
+"""GraphRAG Store with 2-hop scoped retrieval and hybrid context."""
 
 import logging
 from typing import Dict, List, Optional
@@ -10,13 +10,11 @@ logger = logging.getLogger(__name__)
 
 class GraphRAGStore(Neo4jPropertyGraphStore):
     """
-    Extended Neo4j Property Graph Store with paper-scoped entity isolation.
+    Extended Neo4j Property Graph Store.
 
     Features:
-    - Paper-scoped entities (namespaced IDs prevent cross-paper overwrites)
-    - SAME_AS edges link equivalent entities across papers
-      based on entity_key_normalized matching
-    - 2-hop scoped retrieval with SAME_AS traversal
+    - Shared global entity graph (entities merge by name across papers)
+    - 2-hop scoped retrieval filtered by paper_ids
     - Hybrid retrieval: graph context + original chunk text
     """
 
@@ -32,34 +30,6 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
             )
         except Exception as e:
             logger.warning("Could not create chunk vector index: %s", e)
-
-    # ── Ingest: SAME_AS linking ──────────────────────────────────────────────
-
-    def create_same_as_links(self, paper_id: str) -> int:
-        """Create SAME_AS edges between entities of `paper_id` and entities
-        from OTHER papers that share the same `entity_key_normalized`.
-
-        Returns the number of SAME_AS relationships created.
-        """
-        cypher = """
-        MATCH (a:__Entity__)
-        WHERE a.paper_id = $paper_id
-          AND a.entity_key_normalized IS NOT NULL
-          AND a.entity_key_normalized <> ''
-        WITH a
-        MATCH (b:__Entity__)
-        WHERE b.paper_id <> $paper_id
-          AND b.entity_key_normalized = a.entity_key_normalized
-          AND NOT (a)-[:SAME_AS]-(b)
-        MERGE (a)-[:SAME_AS]->(b)
-        RETURN count(*) AS created
-        """
-        result = self.structured_query(cypher, param_map={"paper_id": paper_id})
-        created = result[0]["created"] if result else 0
-        logger.info(
-            "Created %d SAME_AS links for paper_id=%s", created, paper_id
-        )
-        return created
 
     # ── Query: paper name resolution ────────────────────────────────────────
 
@@ -100,8 +70,7 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         """Retrieve context for the query pipeline.
 
         1. Vector similarity search on entity embeddings, scoped to paper_ids
-        2. 2-hop neighbor traversal (all rel types including SAME_AS),
-           with ALL neighbors strictly scoped to paper_ids
+        2. 2-hop neighbor traversal, with ALL neighbors strictly scoped to paper_ids
         3. Collect original chunk text via MENTIONS relationships
 
         Returns:
@@ -142,9 +111,11 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
     ) -> List[Dict]:
         """Vector search → 2-hop traversal, all nodes scoped to paper_ids."""
         # NOTE: The vector index name is 'entity' (set by LlamaIndex).
+        # ann_k overscans the ANN index so the paper_id filter doesn't
+        # exhaust the budget before any relevant papers appear.
         cypher = """
-        // Step 1: Vector search — seeds scoped to paper_ids
-        CALL db.index.vector.queryNodes('entity', $top_k, $embedding)
+        // Step 1: Vector search — overscan then filter to paper_ids
+        CALL db.index.vector.queryNodes('entity', $ann_k, $embedding)
         YIELD node AS seed, score
         WHERE seed.paper_id IN $paper_ids
         WITH seed, score
@@ -160,34 +131,32 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         WHERE hop2.paper_id IN $paper_ids
           AND hop2 <> seed
 
-        // Return all three levels of facts
+        // Collect 1-hop and 2-hop facts
         WITH seed, r1, hop1, r2, hop2
-
-        // Collect 1-hop facts
         WITH seed,
              collect(DISTINCT {
-                source_name: seed.entity_key,
+                source_name: seed.name,
                 source_type: [l IN labels(seed) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 source_description: seed.entity_description,
                 source_paper_id: seed.paper_id,
                 source_paper_name: seed.paper_name,
                 relation: type(r1),
                 relation_description: r1.relation_description,
-                target_name: hop1.entity_key,
+                target_name: hop1.name,
                 target_type: [l IN labels(hop1) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 target_description: hop1.entity_description,
                 target_paper_id: hop1.paper_id,
                 target_paper_name: hop1.paper_name
              }) AS hop1_facts,
              collect(DISTINCT {
-                source_name: hop1.entity_key,
+                source_name: hop1.name,
                 source_type: [l IN labels(hop1) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 source_description: hop1.entity_description,
                 source_paper_id: hop1.paper_id,
                 source_paper_name: hop1.paper_name,
                 relation: type(r2),
                 relation_description: r2.relation_description,
-                target_name: hop2.entity_key,
+                target_name: hop2.name,
                 target_type: [l IN labels(hop2) WHERE NOT l IN ['__Entity__', '__Node__'] | l][0],
                 target_description: hop2.entity_description,
                 target_paper_id: hop2.paper_id,
@@ -217,6 +186,7 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
             "embedding": query_embedding,
             "paper_ids": paper_ids,
             "top_k": top_k,
+            "ann_k": top_k * 10,
         }
 
         data = self.structured_query(cypher, param_map=params)

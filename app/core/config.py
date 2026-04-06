@@ -61,7 +61,8 @@ class Settings(BaseSettings):
     OPENROUTER_EMBED_MODEL: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
     OPENROUTER_IMAGE_MODEL: str = "openai/gpt-4o-mini"
     OPENROUTER_SUMMARY_MODEL: str = "openai/gpt-4o-mini"
-    OPENROUTER_CHAT_MODEL: str = "openai/gpt-4o"
+    # OPENROUTER_CHAT_MODEL: str = "openai/gpt-4o"
+    OPENROUTER_CHAT_MODEL: str = "anthropic/claude-sonnet-4"
     OPENROUTER_EXTRACT_MODEL: str = "openai/gpt-4o-mini"
 
     # Image Model Configuration
@@ -85,6 +86,11 @@ class Settings(BaseSettings):
     EXTRACT_MODEL_TEMPERATURE: float = 0.1
     
     HISTORY_LIMIT: int = 10
+
+    # Writing pipeline debug (local dev only)
+    WRITING_DEBUG: bool = False
+    WRITING_DEBUG_DIR: str = "debug/write_pipeline"
+    WRITING_DEBUG_MAX_CONTENT: int = 5000
 
     # RabbitMQ
     RABBITMQ_URI: str = "amqp://guest:guest@localhost:5672/"

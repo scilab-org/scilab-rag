@@ -27,7 +27,7 @@ from llama_index.core.graph_stores.types import (
 from app.agents.ingest.prompts import KG_TRIPLET_EXTRACT_TMPL
 from app.domain.models import PaperInfo
 from app.core.config import settings
-from app.helpers.utils import normalize_entity_key, normalize_rel_label
+from app.helpers.utils import normalize_rel_label
 
 logger = logging.getLogger(__name__)
 
@@ -163,21 +163,12 @@ class GraphRAGExtractor(TransformComponent):
         entity_metadata["paper_name"] = self.paper_info.paper_name
 
         for entity, entity_type, description in entities:
-            entity_key = entity
-            entity_uid = f"{self.paper_info.paper_id}::{entity_key}"
-            
-            if not entity_type:
-                logger.warning("Missing entity_type for entity=%r", entity)
-            
             new_entity = EntityNode(
-                name=entity_uid,
+                name=entity,
                 label=entity_type,
                 properties={
                     **entity_metadata,
-                    "entity_name": entity,  
                     "entity_description": description,
-                    "entity_key": entity_key,
-                    "entity_key_normalized": normalize_entity_key(entity_key),
                 }
             )
             existing_nodes.append(new_entity)
@@ -185,26 +176,23 @@ class GraphRAGExtractor(TransformComponent):
         relation_metadata = node.metadata.copy()
         relation_metadata["paper_id"] = self.paper_info.paper_id
         relation_metadata["paper_name"] = self.paper_info.paper_name
-        for sub, obj, rel, description in entities_relationship:
 
-            source_id = f"{self.paper_info.paper_id}::{sub}"
-            target_id = f"{self.paper_info.paper_id}::{obj}"
+        for sub, obj, rel, description in entities_relationship:
             normalized_rel = normalize_rel_label(rel)
             relation = Relation(
-                source_id=source_id,
-                target_id=target_id,
+                source_id=sub,
+                target_id=obj,
                 label=normalized_rel,
-                properties=  {
+                properties={
                     **relation_metadata,
                     "relation_description": description,
                 },
             )
-
             existing_relations.append(relation)
 
-        node.metadata["paper_id"] = self.paper_info.paper_id      
+        node.metadata["paper_id"] = self.paper_info.paper_id
         node.metadata["paper_name"] = self.paper_info.paper_name
         node.metadata[KG_NODES_KEY] = existing_nodes
         node.metadata[KG_RELATIONS_KEY] = existing_relations
-        
+
         return node
