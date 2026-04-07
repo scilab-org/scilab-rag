@@ -107,7 +107,7 @@ class QuestionOption(CamelCaseModel):
 
 class PlanningQuestion(CamelCaseModel):
     """One structured question from the planning agent."""
-    type: str = Field(..., description="single_select | multi_select | text | confirm")
+    type: str = Field(..., description="single_select | multi_select | text")
     prompt: str = Field(..., description="The question text")
     options: Optional[List[QuestionOption]] = Field(default=None, description="Choices for select-type questions")
     allow_custom: bool = Field(default=True, description="Whether the user can type a custom answer")

@@ -66,7 +66,7 @@ class OrchestratorDecision:
 @dataclass
 class PlanningQuestion:
     """A single structured question from the planning agent."""
-    type: str                             # single_select | multi_select | text | confirm
+    type: str                             # single_select | multi_select | text
     prompt: str
     options: list[dict] = field(default_factory=list)  # [{label, value}, ...]
     allow_custom: bool = True

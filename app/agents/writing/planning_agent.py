@@ -180,7 +180,7 @@ class PlanningAgent:
                         "type": q.type,
                         "prompt": q.prompt,
                         "options": q.options,
-                        "allow_custom": q.allow_custom,
+                        "allowCustom": q.allow_custom,
                     }
                     for q in questions
                 ],

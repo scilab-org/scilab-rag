@@ -102,7 +102,7 @@ or do you need to ask the user more questions?
 ### If you need more information
 
 Return a JSON array of question objects. Each question has:
-- "type": one of "single_select", "multi_select", "text", "confirm"
+- "type": one of "single_select", "multi_select", "text"
 - "prompt": the question text
 - "options": array of {{"label": "...", "value": "..."}} (only for select types)
 - "allow_custom": true (always true — user can always type a custom answer)
@@ -111,7 +111,7 @@ Guidelines for questions:
 1. Ask ALL questions in a single batch (3-6 questions typical for round 1).
 2. Use select types when you can infer likely answers from the RAG context.
 3. Use text type for open-ended questions (e.g. "What is your main argument?").
-4. Use confirm type for yes/no decisions.
+4. For yes/no decisions, use "single_select" with "Yes" and "No" as options.
 5. Be specific and contextual — reference actual paper content when possible.
 6. Do NOT ask about formatting or LaTeX — that's the writing agent's job.
 7. Focus on: scope, key points to cover, methodology choices, which results \

@@ -289,8 +289,8 @@ async def _handle_write_mode(
                 content = "I have some follow-up questions before I can continue writing."
                 metadata = {
                     "model": settings.OPENROUTER_CHAT_MODEL,
-                    "writing_action": "planning_questions",
-                    "question_schema": plan_result["questions"],
+                    "writingAction": "planning_questions",
+                    "questionSchema": plan_result["questions"],
                 }
 
                 assistant_msg = await msg_repo.create(
@@ -334,8 +334,8 @@ async def _handle_write_mode(
                 content = "Before I write this section, I need some information from you."
                 metadata = {
                     "model": settings.OPENROUTER_CHAT_MODEL,
-                    "writing_action": "planning_questions",
-                    "question_schema": plan_result["questions"],
+                    "writingAction": "planning_questions",
+                    "questionSchema": plan_result["questions"],
                 }
 
                 assistant_msg = await msg_repo.create(
@@ -393,13 +393,13 @@ async def _handle_write_mode(
         content = write_result["diff_summary"]
         metadata = {
             "model": settings.OPENROUTER_CHAT_MODEL,
-            "writing_action": "section_output",
-            "writing_mode": decision.writing_mode.value,
-            "writing_output": {
-                "section_target": write_result["section_target"],
+            "writingAction": "section_output",
+            "writingMode": decision.writing_mode.value,
+            "writingOutput": {
+                "sectionTarget": write_result["section_target"],
                 "content": final_content,
             },
-            "validation_summary": validation_summary,
+            "validationSummary": validation_summary,
             "sources": paper_ids,
         }
 
