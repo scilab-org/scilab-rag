@@ -13,6 +13,16 @@ payload in an envelope::
 This consumer unwraps the envelope, runs the KG ingestion pipeline, and
 publishes a ``PaperIngestionCompletedEvent`` (plain JSON, since the .NET
 side uses ``UseRawJsonDeserializer``).
+
+Idempotency
+-----------
+Before ingestion starts, a row keyed on ``paper_id`` is inserted into the
+``processed_messages`` table (PostgreSQL).  A duplicate message for the same
+paper triggers a primary-key violation (``IntegrityError``), which is caught
+and causes the message to be **silently acked** without re-running ingestion.
+
+If ingestion *fails*, the guard row is deleted so that a later retry can
+attempt the paper again.
 """
 
 import json
@@ -21,8 +31,11 @@ from typing import Optional
 
 import aio_pika
 from aio_pika.abc import AbstractIncomingMessage
+from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
+from app.db.database import AsyncSessionLocal
+from app.db.entities import ProcessedMessage
 from app.messaging import connection
 from app.messaging.models import PaperIngestionCompletedMessage, PaperIngestionMessage
 from app.messaging.publisher import publish_paper_ingestion_completed
@@ -58,6 +71,25 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
             # MassTransit serialises with camelCase; map to our Pydantic model.
             ingestion_msg = PaperIngestionMessage.model_validate(payload)
 
+            # ------------------------------------------------------------------
+            # Idempotency guard: attempt to claim this paper_id.
+            # A duplicate message for an already-ingested paper will hit a
+            # primary-key violation here and be silently acked.
+            # ------------------------------------------------------------------
+            async with AsyncSessionLocal() as session:
+                try:
+                    session.add(ProcessedMessage(paper_id=ingestion_msg.paper_id))
+                    await session.commit()
+                except IntegrityError:
+                    await session.rollback()
+                    logger.warning(
+                        "Duplicate ingestion request for paper %s (%s) — "
+                        "already processed, skipping.",
+                        ingestion_msg.paper_id,
+                        ingestion_msg.paper_name,
+                    )
+                    return  # ack silently; message.process() context manager handles it
+
             logger.info(
                 "Processing ingestion for paper %s (%s)",
                 ingestion_msg.paper_id,
@@ -68,7 +100,23 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
                 paper_id=ingestion_msg.paper_id,
                 paper_name=ingestion_msg.paper_name,
                 parsed_text=ingestion_msg.parsed_text,
+                reference_key=ingestion_msg.reference_key,
+                authors=ingestion_msg.authors,
+                publisher=ingestion_msg.publisher,
+                journal_name=ingestion_msg.journal_name,
+                volume=ingestion_msg.volume,
+                pages=ingestion_msg.pages,
+                doi=ingestion_msg.doi,
+                publication_month_year=ingestion_msg.publication_month_year,
             )
+
+            if not result.success:
+                # Ingestion failed — remove the guard row so a retry is possible.
+                async with AsyncSessionLocal() as session:
+                    row = await session.get(ProcessedMessage, ingestion_msg.paper_id)
+                    if row is not None:
+                        await session.delete(row)
+                        await session.commit()
 
             # Publish the outcome back to .NET.
             completed = PaperIngestionCompletedMessage(
@@ -91,6 +139,17 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
                 paper_id = raw_payload.get("paperId", raw_payload.get("paper_id"))
                 if paper_id is None:
                     raise ValueError("paper_id could not be extracted from payload: {}".format(raw_payload))
+
+                # Remove the guard row (if it was inserted) so a retry can run.
+                try:
+                    async with AsyncSessionLocal() as session:
+                        row = await session.get(ProcessedMessage, str(paper_id))
+                        if row is not None:
+                            await session.delete(row)
+                            await session.commit()
+                except Exception:
+                    logger.exception("Failed to remove idempotency guard row for paper %s", paper_id)
+
                 completed = PaperIngestionCompletedMessage(
                     paper_id=str(paper_id),
                     is_success=False,

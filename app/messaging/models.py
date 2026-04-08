@@ -29,6 +29,14 @@ class PaperIngestionMessage(_CamelMessage):
     paper_id: str
     paper_name: str
     parsed_text: str
+    reference_key: Optional[str] = None
+    authors: Optional[str] = None
+    publisher: Optional[str] = None
+    journal_name: Optional[str] = None
+    volume: Optional[str] = None
+    pages: Optional[str] = None
+    doi: Optional[str] = None
+    publication_month_year: Optional[str] = None
 
 
 class PaperIngestionCompletedMessage(_CamelMessage):

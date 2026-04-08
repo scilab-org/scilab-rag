@@ -52,7 +52,7 @@ class Settings(BaseSettings):
     HYBRID_MAX_TOKENS: int = 6000
     
     # Graph extraction (ceiling for dynamic per-chunk formula)
-    MAX_TRIPLETS_PER_CHUNK: int = 30
+    MAX_TRIPLETS_PER_CHUNK: int = 20
     
     # Query Engine
     SIMILARITY_TOP_K: int = 15

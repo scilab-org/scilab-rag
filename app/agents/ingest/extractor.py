@@ -118,15 +118,7 @@ class GraphRAGExtractor(TransformComponent):
 
         text = node.get_content(metadata_mode="llm")
 
-        # ── Dynamic max_triplets based on chunk token count ───────────
-        # Formula: base=5 + 5 per 1000 tokens, capped by MAX_TRIPLETS_PER_CHUNK
-        enc = tiktoken.encoding_for_model("gpt-4o-mini")  # cached internally
-        token_count = len(enc.encode(text))
-        max_triplets = min(5 + (token_count // 1000) * 5, self.max_path_per_chunks)
-        logger.debug(
-            "Chunk has %d tokens → max_triplets=%d (ceiling=%d)",
-            token_count, max_triplets, self.max_path_per_chunks,
-        )
+      
 
         # Build section headings string from chunk metadata
         headings = node.metadata.get("headings") or []
@@ -139,7 +131,7 @@ class GraphRAGExtractor(TransformComponent):
             llm_response = await self.llm.apredict(
                 self.extract_prompt,
                 text=text,
-                max_knowledge_triplets=max_triplets,
+                max_knowledge_triplets=self.max_path_per_chunks,
                 paper_title=self.paper_info.paper_name,
                 section_headings=section_headings,
             )
@@ -161,6 +153,14 @@ class GraphRAGExtractor(TransformComponent):
         entity_metadata = node.metadata.copy()
         entity_metadata["paper_id"] = self.paper_info.paper_id
         entity_metadata["paper_name"] = self.paper_info.paper_name
+        entity_metadata["cite_key"] = self.paper_info.reference_key
+        entity_metadata["authors"] = self.paper_info.authors
+        entity_metadata["publisher"] = self.paper_info.publisher
+        entity_metadata["journal_name"] = self.paper_info.journal_name
+        entity_metadata["volume"] = self.paper_info.volume
+        entity_metadata["pages"] = self.paper_info.pages
+        entity_metadata["doi"] = self.paper_info.doi
+        entity_metadata["publication_month_year"] = self.paper_info.publication_month_year
 
         for entity, entity_type, description in entities:
             new_entity = EntityNode(
@@ -176,6 +176,14 @@ class GraphRAGExtractor(TransformComponent):
         relation_metadata = node.metadata.copy()
         relation_metadata["paper_id"] = self.paper_info.paper_id
         relation_metadata["paper_name"] = self.paper_info.paper_name
+        relation_metadata["cite_key"] = self.paper_info.reference_key
+        relation_metadata["authors"] = self.paper_info.authors
+        relation_metadata["publisher"] = self.paper_info.publisher
+        relation_metadata["journal_name"] = self.paper_info.journal_name
+        relation_metadata["volume"] = self.paper_info.volume
+        relation_metadata["pages"] = self.paper_info.pages
+        relation_metadata["doi"] = self.paper_info.doi
+        relation_metadata["publication_month_year"] = self.paper_info.publication_month_year
 
         for sub, obj, rel, description in entities_relationship:
             normalized_rel = normalize_rel_label(rel)
@@ -192,6 +200,14 @@ class GraphRAGExtractor(TransformComponent):
 
         node.metadata["paper_id"] = self.paper_info.paper_id
         node.metadata["paper_name"] = self.paper_info.paper_name
+        node.metadata["cite_key"] = self.paper_info.reference_key
+        node.metadata["authors"] = self.paper_info.authors
+        node.metadata["publisher"] = self.paper_info.publisher
+        node.metadata["journal_name"] = self.paper_info.journal_name
+        node.metadata["volume"] = self.paper_info.volume
+        node.metadata["pages"] = self.paper_info.pages
+        node.metadata["doi"] = self.paper_info.doi
+        node.metadata["publication_month_year"] = self.paper_info.publication_month_year
         node.metadata[KG_NODES_KEY] = existing_nodes
         node.metadata[KG_RELATIONS_KEY] = existing_relations
 

@@ -26,6 +26,14 @@ async def ingest_paper_to_kg(
     paper_id: str,
     paper_name: str,
     parsed_text: str,
+    reference_key: Optional[str] = None,
+    authors: Optional[str] = None,
+    publisher: Optional[str] = None,
+    journal_name: Optional[str] = None,
+    volume: Optional[str] = None,
+    pages: Optional[str] = None,
+    doi: Optional[str] = None,
+    publication_month_year: Optional[str] = None,
 ) -> IngestionResult:
     """Run the full knowledge-graph ingestion pipeline for one paper.
 
@@ -38,6 +46,22 @@ async def ingest_paper_to_kg(
     parsed_text:
         JSON string produced by ``HybridChunker`` during the parse step.
         Expected shape: ``{"chunks": [{"text": "...", "headings": [...], "captions": [...]}]}``.
+    reference_key:
+        Citation key generated on the .NET side, e.g. ``"LeCun2015"``.
+    authors:
+        Raw author string as stored in PaperBank, e.g. ``"LeCun, Yann; Bengio, Yoshua"``.
+    publisher:
+        Publisher name.
+    journal_name:
+        Journal name for journal articles.
+    volume:
+        Volume identifier.
+    pages:
+        Page range, e.g. ``"436--444"``.
+    doi:
+        Digital Object Identifier.
+    publication_month_year:
+        Formatted publication date, e.g. ``"May 2015"``.
 
     Returns
     -------
@@ -57,8 +81,15 @@ async def ingest_paper_to_kg(
         paper_info = PaperInfo(
             paper_id=paper_id,
             paper_name=paper_name,
+            reference_key=reference_key,
+            authors=authors,
+            publisher=publisher,
+            journal_name=journal_name,
+            volume=volume,
+            pages=pages,
+            doi=doi,
+            publication_month_year=publication_month_year,
         )
-
         extract_llm = get_extract_llm()
         graph_store = get_graph_store()
         embed_model = get_embed_llm()
