@@ -71,6 +71,7 @@ class WritingAgent:
             planning_instructions=ctx.planning_instructions or "(no planning context)",
             referenced_sections=_format_referenced_sections(ctx.referenced_sections),
             ruleset=_format_ruleset(ctx.ruleset),
+            available_citations=_format_available_citations(ctx.cite_key_map),
         )
 
         if dbg:
@@ -156,6 +157,24 @@ def _format_referenced_sections(sections: list[dict]) -> str:
         content = s.get("content", "")
         parts.append(f"### {section_type}\n{content}")
     return "\n\n".join(parts)
+
+
+def _format_available_citations(cite_key_map: dict) -> str:
+    """Format {paper_id: cite_key} as a list of citation entries for the prompt.
+
+    Shows both \\autocite (parenthetical) and \\textcite (narrative) forms so
+    the LLM knows exactly which commands to use.
+    """
+    if not cite_key_map:
+        return "(no citation keys available — do not use citation commands)"
+    keys = sorted(k for k in cite_key_map.values() if k)
+    if not keys:
+        return "(no citation keys available — do not use citation commands)"
+    lines = [
+        f"- \\autocite{{{key}}} (parenthetical)  or  \\textcite{{{key}}} (narrative)"
+        for key in keys
+    ]
+    return "\n".join(lines)
 
 
 def _format_ruleset(ruleset: Optional[str]) -> str:

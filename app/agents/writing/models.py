@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Optional
+from typing import Dict, Optional
 
 
 # ── Enums ────────────────────────────────────────────────────────────────
@@ -130,3 +130,6 @@ class WritingContext:
 
     # Set by the planning agent
     planning_instructions: Optional[str] = None  # final markdown instructions for writing agent
+
+    # Populated in chat.py before the writing agent runs (paper_id → cite_key)
+    cite_key_map: Dict[str, str] = field(default_factory=dict)

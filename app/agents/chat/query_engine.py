@@ -191,6 +191,49 @@ class GraphRAGQueryEngine:
         )
 
     @staticmethod
+    def _build_attribution_suffix(
+        authors: str,
+        publication_month_year: str,
+    ) -> str:
+        """Build a short '(Author et al., Year)' attribution string.
+
+        Only included when at least one of authors/year is available.
+        Never exposes cite_key or paper_id.
+        """
+        # Extract year from e.g. "May 2015" or "2015"
+        year = ""
+        if publication_month_year:
+            parts = publication_month_year.strip().split()
+            for part in reversed(parts):
+                if part.isdigit() and len(part) == 4:
+                    year = part
+                    break
+
+        # Build short author string
+        author_short = ""
+        if authors:
+            # Split on semicolon or comma to get individual author names
+            author_list = [a.strip() for a in authors.replace(";", ",").split(",") if a.strip()]
+            if author_list:
+                # Use first author's last name (last token before any comma within a name)
+                first_author = author_list[0].strip()
+                # Handle "Last, First" format
+                name_parts = first_author.split()
+                last_name = name_parts[0] if name_parts else first_author
+                if len(author_list) > 1:
+                    author_short = f"{last_name} et al."
+                else:
+                    author_short = last_name
+
+        if author_short and year:
+            return f"{author_short}, {year}"
+        if author_short:
+            return author_short
+        if year:
+            return year
+        return ""
+
+    @staticmethod
     def _format_graph_records(
         records: List[Dict],
         paper_names: Dict[str, str],
@@ -207,6 +250,8 @@ class GraphRAGQueryEngine:
             src_desc = r.get("source_description") or ""
             src_paper_id = r.get("source_paper_id") or ""
             src_paper_name = r.get("source_paper_name") or ""
+            src_authors = r.get("source_authors") or ""
+            src_pub_year = r.get("source_publication_month_year") or ""
 
             if not source:
                 continue
@@ -239,7 +284,16 @@ class GraphRAGQueryEngine:
             paper_label = GraphRAGQueryEngine._resolve_paper_label(
                 src_paper_id, src_paper_name, paper_names,
             )
-            group_key = f"{source} ({paper_label})" if paper_label else source
+            # Enrich label with attribution suffix (authors + year)
+            attribution = GraphRAGQueryEngine._build_attribution_suffix(
+                src_authors, src_pub_year,
+            )
+            if paper_label and attribution:
+                group_key = f"{source} ({paper_label} — {attribution})"
+            elif paper_label:
+                group_key = f"{source} ({paper_label})"
+            else:
+                group_key = source
             grouped.setdefault(group_key, []).append(note)
 
         lines = []
@@ -256,20 +310,28 @@ class GraphRAGQueryEngine:
         paper_names: Dict[str, str],
     ) -> str:
         """Format original paper text chunks.
-        Uses paper name for attribution; never exposes UUIDs.
+        Uses paper name + authors + year for attribution; never exposes UUIDs or cite_keys.
         """
         lines = []
-        for i, chunk in enumerate(chunks, 1):
+        for chunk in chunks:
             text = chunk.get("text", "")
             paper_id = chunk.get("paper_id", "")
             chunk_paper_name = chunk.get("paper_name", "")
+            authors = chunk.get("authors", "")
+            pub_year = chunk.get("publication_month_year", "")
 
             paper_label = GraphRAGQueryEngine._resolve_paper_label(
                 paper_id, chunk_paper_name, paper_names,
             )
-            if paper_label:
+            attribution = GraphRAGQueryEngine._build_attribution_suffix(authors, pub_year)
+            if paper_label and attribution:
+                header = f"[{paper_label} — {attribution}]"
+            elif paper_label:
                 header = f"[{paper_label}]"
-            formated_line = f"{header}\n{text}" if header else text
-            lines.append(formated_line)
+            else:
+                header = ""
+
+            formatted_line = f"{header}\n{text}" if header else text
+            lines.append(formatted_line)
 
         return "\n\n".join(lines)

@@ -59,6 +59,90 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
             if row.get("paper_id") and row.get("paper_name")
         }
 
+    def resolve_cite_keys(self, paper_ids: List[str]) -> Dict[str, str]:
+        """Resolve paper_id → cite_key from existing entity/chunk nodes.
+
+        Returns a dict like ``{"uuid-1": "LeCun2015", ...}``.
+        Papers without a cite_key are silently omitted.
+        """
+        if not paper_ids:
+            return {}
+
+        cypher = """
+        MATCH (n:__Entity__)
+        WHERE n.paper_id IN $paper_ids
+          AND n.cite_key IS NOT NULL
+          AND n.cite_key <> ''
+        RETURN DISTINCT n.paper_id AS paper_id, n.cite_key AS cite_key
+        """
+        data = self.structured_query(cypher, param_map={"paper_ids": paper_ids})
+        if not data:
+            return {}
+
+        return {
+            row["paper_id"]: row["cite_key"]
+            for row in data
+            if row.get("paper_id") and row.get("cite_key")
+        }
+
+    def resolve_paper_info(self, paper_ids: List[str]) -> Dict[str, Dict]:
+        """Resolve full bibliographic info for a list of paper_ids.
+
+        Returns a dict like::
+
+            {
+                "uuid-1": {
+                    "paper_name": "Deep Learning",
+                    "cite_key": "LeCun2015",
+                    "authors": "LeCun, Yann; Bengio, Yoshua; Hinton, Geoffrey",
+                    "journal_name": "Nature",
+                    "publication_month_year": "May 2015",
+                    "doi": "10.1038/nature14539",
+                },
+                ...
+            }
+
+        Only fields that are non-null/non-empty are included in each entry.
+        Papers with no matching nodes are silently omitted.
+        """
+        if not paper_ids:
+            return {}
+
+        cypher = """
+        MATCH (n:__Entity__)
+        WHERE n.paper_id IN $paper_ids
+          AND n.paper_name IS NOT NULL
+          AND n.paper_name <> ''
+        RETURN DISTINCT
+            n.paper_id               AS paper_id,
+            n.paper_name             AS paper_name,
+            n.cite_key               AS cite_key,
+            n.authors                AS authors,
+            n.journal_name           AS journal_name,
+            n.publication_month_year AS publication_month_year,
+            n.doi                    AS doi
+        """
+        data = self.structured_query(cypher, param_map={"paper_ids": paper_ids})
+        if not data:
+            return {}
+
+        result: Dict[str, Dict] = {}
+        for row in data:
+            pid = row.get("paper_id")
+            if not pid:
+                continue
+            if pid in result:
+                continue  # keep first occurrence per paper_id
+            entry: Dict[str, str] = {}
+            for field in ("paper_name", "cite_key", "authors", "journal_name",
+                          "publication_month_year", "doi"):
+                val = row.get(field)
+                if val and str(val).strip():
+                    entry[field] = str(val).strip()
+            if entry.get("paper_name"):
+                result[pid] = entry
+        return result
+
     # ── Query: scoped 2-hop retrieval + chunk text ───────────────────────────
 
     def retrieve_scoped_context(
@@ -140,6 +224,9 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 source_description: seed.entity_description,
                 source_paper_id: seed.paper_id,
                 source_paper_name: seed.paper_name,
+                source_cite_key: seed.cite_key,
+                source_authors: seed.authors,
+                source_publication_month_year: seed.publication_month_year,
                 relation: type(r1),
                 relation_description: r1.relation_description,
                 target_name: hop1.name,
@@ -154,6 +241,9 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 source_description: hop1.entity_description,
                 source_paper_id: hop1.paper_id,
                 source_paper_name: hop1.paper_name,
+                source_cite_key: hop1.cite_key,
+                source_authors: hop1.authors,
+                source_publication_month_year: hop1.publication_month_year,
                 relation: type(r2),
                 relation_description: r2.relation_description,
                 target_name: hop2.name,
@@ -169,18 +259,21 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         WITH fact
         WHERE fact.source_name IS NOT NULL
         RETURN DISTINCT
-            fact.source_name          AS source_name,
-            fact.source_type          AS source_type,
-            fact.source_description   AS source_description,
-            fact.source_paper_id      AS source_paper_id,
-            fact.source_paper_name    AS source_paper_name,
-            fact.relation             AS relation,
-            fact.relation_description AS relation_description,
-            fact.target_name          AS target_name,
-            fact.target_type          AS target_type,
-            fact.target_description   AS target_description,
-            fact.target_paper_id      AS target_paper_id,
-            fact.target_paper_name    AS target_paper_name
+            fact.source_name                    AS source_name,
+            fact.source_type                    AS source_type,
+            fact.source_description             AS source_description,
+            fact.source_paper_id                AS source_paper_id,
+            fact.source_paper_name              AS source_paper_name,
+            fact.source_cite_key                AS source_cite_key,
+            fact.source_authors                 AS source_authors,
+            fact.source_publication_month_year  AS source_publication_month_year,
+            fact.relation                       AS relation,
+            fact.relation_description           AS relation_description,
+            fact.target_name                    AS target_name,
+            fact.target_type                    AS target_type,
+            fact.target_description             AS target_description,
+            fact.target_paper_id                AS target_paper_id,
+            fact.target_paper_name              AS target_paper_name
         """
         params = {
             "embedding": query_embedding,
@@ -201,6 +294,9 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                 "source_description": record.get("source_description") or "",
                 "source_paper_id": record.get("source_paper_id") or "",
                 "source_paper_name": record.get("source_paper_name") or "",
+                "source_cite_key": record.get("source_cite_key") or "",
+                "source_authors": record.get("source_authors") or "",
+                "source_publication_month_year": record.get("source_publication_month_year") or "",
                 "relation": record.get("relation") or "",
                 "relation_description": record.get("relation_description") or "",
                 "target_name": record.get("target_name") or "",
@@ -226,9 +322,14 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         ORDER BY score DESC
         LIMIT $top_k
         RETURN DISTINCT
-            chunk.text       AS text,
-            chunk.paper_id   AS paper_id,
-            chunk.paper_name AS paper_name
+            chunk.text                     AS text,
+            chunk.paper_id                 AS paper_id,
+            chunk.paper_name               AS paper_name,
+            chunk.cite_key                 AS cite_key,
+            chunk.authors                  AS authors,
+            chunk.journal_name             AS journal_name,
+            chunk.publication_month_year   AS publication_month_year,
+            chunk.doi                      AS doi
         """
         params = {
             "embedding": query_embedding,
@@ -247,5 +348,10 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
                     "text": text.strip(),
                     "paper_id": record.get("paper_id") or "",
                     "paper_name": record.get("paper_name") or "",
+                    "cite_key": record.get("cite_key") or "",
+                    "authors": record.get("authors") or "",
+                    "journal_name": record.get("journal_name") or "",
+                    "publication_month_year": record.get("publication_month_year") or "",
+                    "doi": record.get("doi") or "",
                 })
         return results

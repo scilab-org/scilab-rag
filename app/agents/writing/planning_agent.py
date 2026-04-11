@@ -48,6 +48,32 @@ logger = logging.getLogger(__name__)
 _PHASE = "planning"
 
 
+def _build_attribution(authors: str, pub_year_str: str, paper_name: str = "") -> str:
+    """Build a short attribution string like 'LeCun et al., 2015' or paper name."""
+    year = ""
+    if pub_year_str:
+        for part in reversed(pub_year_str.strip().split()):
+            if part.isdigit() and len(part) == 4:
+                year = part
+                break
+
+    author_short = ""
+    if authors:
+        author_list = [a.strip() for a in authors.replace(";", ",").split(",") if a.strip()]
+        if author_list:
+            first_parts = author_list[0].strip().split()
+            last_name = first_parts[0] if first_parts else author_list[0]
+            author_short = f"{last_name} et al." if len(author_list) > 1 else last_name
+
+    if author_short and year:
+        return f"{author_short}, {year}"
+    if author_short:
+        return author_short
+    if year:
+        return year
+    return paper_name  # fall back to paper name if no author/year info
+
+
 class PlanningAgent:
     """
     Gathers information needed before writing, via a unified planning
@@ -238,14 +264,23 @@ class PlanningAgent:
             for record in context.get("graph", []):
                 src = record.get("source_name", "")
                 desc = record.get("source_description", "")
+                authors = record.get("source_authors", "")
+                pub_year = record.get("source_publication_month_year", "")
+                paper_name = record.get("source_paper_name", "")
                 if src and desc:
-                    parts.append(f"- {src}: {desc}")
+                    attribution = _build_attribution(authors, pub_year, paper_name)
+                    prefix = f"[{attribution}] " if attribution else ""
+                    parts.append(f"- {prefix}{src}: {desc}")
 
             for chunk in context.get("chunks", []):
                 text = chunk.get("text", "")
                 paper = chunk.get("paper_name", "")
+                authors = chunk.get("authors", "")
+                pub_year = chunk.get("publication_month_year", "")
                 if text:
-                    parts.append(f"[{paper}] {text[:500]}")
+                    attribution = _build_attribution(authors, pub_year, paper)
+                    header = f"[{attribution}]" if attribution else f"[{paper}]" if paper else ""
+                    parts.append(f"{header} {text[:500]}" if header else text[:500])
 
             formatted = "\n".join(parts) if parts else ""
 

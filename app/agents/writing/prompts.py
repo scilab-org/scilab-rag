@@ -216,13 +216,21 @@ assistant.  You produce LaTeX content for scientific paper sections.
 1. Output ONLY valid LaTeX.  No markdown, no explanations, no preamble.
 2. Start with the \\section{{}} command (or \\subsection{{}} if appropriate).
 3. Use standard academic LaTeX:
-   - \\cite{{key}} for citations
+   - \\autocite{{key}} for parenthetical citations (e.g. "...as shown \\autocite{{smith2023}}.")
+   - \\textcite{{key}} for narrative citations (e.g. "\\textcite{{smith2023}} showed that...")
+   - Do NOT use \\cite{{key}} — always use \\autocite or \\textcite instead.
    - \\ref{{label}} and \\label{{label}} for cross-references
    - Standard environments: equation, figure, table, itemize, enumerate
    - \\textbf{{}}, \\textit{{}}, \\emph{{}} for emphasis
 4. Follow the ruleset if provided (citation format, heading conventions, etc.).
 5. Write in formal academic English appropriate for the discipline.
 6. Be thorough but concise — typical section length is 1-3 pages of LaTeX.
+7. Use ONLY the citation keys listed in "Available citations" when writing \
+citation commands.  Do NOT invent or guess citation keys.
+8. You MUST cite relevant sources.  Every claim, finding, or methodology \
+that originates from a referenced paper MUST have a citation command. \
+Sections without any citations are almost always wrong — if papers are \
+available, USE them.
 """
 
 WRITING_MODE_PROMPTS = {
@@ -236,6 +244,9 @@ Write the **{section_target}** section from scratch.
 
 ## User's request
 {user_message}
+
+## Available citations
+{available_citations}
 
 ## Ruleset
 {ruleset}
@@ -256,6 +267,9 @@ Add content to the **{section_target}** section as requested.
 
 ## User's request
 {user_message}
+
+## Available citations
+{available_citations}
 
 ## Ruleset
 {ruleset}
@@ -281,6 +295,9 @@ Rewrite the **{section_target}** section as requested.
 ## User's request
 {user_message}
 
+## Available citations
+{available_citations}
+
 ## Ruleset
 {ruleset}
 
@@ -301,6 +318,9 @@ Fix the content issues in the **{section_target}** section as described.
 ## User's request
 {user_message}
 
+## Available citations
+{available_citations}
+
 ## Ruleset
 {ruleset}
 
@@ -317,6 +337,9 @@ Fix the LaTeX issues in the **{section_target}** section as described.
 
 ## User's request
 {user_message}
+
+## Available citations
+{available_citations}
 
 ## Ruleset
 {ruleset}
@@ -381,7 +404,8 @@ Check the following LaTeX section for ALL issue types:
 - Proper command syntax
 
 ### 2. Content
-- Citations (\\cite{{}}) should reference real papers: {known_citation_keys}
+- Citations (\\autocite{{}}, \\textcite{{}}, or any \\...cite{{}}) should reference real papers: {known_citation_keys}
+- If papers are available but no citations appear, that is an error — add citations
 - Factual consistency with the referenced content
 - Logical flow and coherence
 
@@ -397,7 +421,8 @@ Check the following LaTeX section for ALL issue types:
 
 Check the following LaTeX section for content issues ONLY (ignore syntax and style):
 
-- Citations (\\cite{{}}) should reference real papers: {known_citation_keys}
+- Citations (\\autocite{{}}, \\textcite{{}}, or any \\...cite{{}}) should reference real papers: {known_citation_keys}
+- If papers are available but no citations appear, that is an error — add citations
 - Factual consistency
 - Logical flow and coherence
 

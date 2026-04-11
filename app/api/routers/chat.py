@@ -179,6 +179,7 @@ async def _handle_write_mode(
         get_planning_agent,
         get_writing_agent,
         get_validation_agent,
+        get_graph_store,
     )
     from app.agents.writing.models import (
         PlanningState,
@@ -186,6 +187,7 @@ async def _handle_write_mode(
         WritingContext,
     )
     from app.agents.writing.debug import WritePipelineDebugger
+    from app.services.latex_validator import extract_citations
 
     msg_repo = ChatMessageRepository(db)
     session_repo = ChatSessionRepository(db)
@@ -369,6 +371,12 @@ async def _handle_write_mode(
                 dbg.log_step("planning", "reused_instructions", planning_state.instructions)
 
         # ── 3. Writing phase ─────────────────────────────────────────────
+        # Populate cite_key_map so writing agent uses real BibTeX keys
+        if paper_ids:
+            graph_store = get_graph_store()
+            ctx.cite_key_map = graph_store.resolve_cite_keys(paper_ids)
+            dbg.log_step("writing", "cite_key_map", ctx.cite_key_map)
+
         writer = get_writing_agent()
         write_result = await writer.write(ctx, dbg=dbg)
 
@@ -385,6 +393,19 @@ async def _handle_write_mode(
 
         dbg.log_step("validation", "final_summary", validation_summary)
 
+        # ── 4b. Extract referenced paper IDs from LaTeX ──────────────────
+        # Build reverse map: cite_key → paper_id
+        cited_keys = extract_citations(final_content)
+        cite_key_to_paper_id: dict[str, str] = {
+            v: k for k, v in ctx.cite_key_map.items()
+        }
+        referenced_paper_ids: list[str] = list({
+            cite_key_to_paper_id[key]
+            for key in cited_keys
+            if key in cite_key_to_paper_id
+        })
+        dbg.log_step("writing", "referenced_paper_ids", referenced_paper_ids)
+
         # ── 5. Build response ────────────────────────────────────────────
         # Reset planning state to idle for next request
         idle_state = PlanningState(status=PlanningStatus.IDLE)
@@ -398,6 +419,7 @@ async def _handle_write_mode(
             "writingOutput": {
                 "sectionTarget": write_result["section_target"],
                 "content": final_content,
+                "referencedPaperIds": referenced_paper_ids,
             },
             "validationSummary": validation_summary,
             "sources": paper_ids,

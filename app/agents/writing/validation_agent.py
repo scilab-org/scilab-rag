@@ -181,34 +181,41 @@ class ValidationAgent:
         return issues
 
     def _check_citations(self, content: str, paper_ids: list[str]) -> list[dict]:
-        """Check that \\cite{key} references exist in Neo4j."""
+        """Check that citation commands reference known keys, and that
+        citations actually appear when papers are available."""
         if not self._graph_store or not paper_ids:
             return []
 
-        cited_keys = extract_citations(content)
-        if not cited_keys:
-            return []
+        # Resolve known cite keys from the graph store (paper_id → cite_key)
+        known_cite_keys = self._graph_store.resolve_cite_keys(paper_ids)
+        valid_keys = set(known_cite_keys.values())
 
-        # Resolve known paper names from the graph store
-        known_names = self._graph_store.resolve_paper_names(paper_ids)
-        # Build a set of plausible citation keys from paper names
-        # (simplified: check if cited key substring-matches any paper name)
-        known_values = set()
-        for pid, pname in known_names.items():
-            known_values.add(pid)
-            known_values.add(pname.lower())
+        cited_keys = extract_citations(content)
 
         issues: list[dict] = []
+
+        # Flag sections that have available papers but zero citations
+        if not cited_keys and valid_keys:
+            issues.append({
+                "type": "citation",
+                "description": (
+                    "No citation commands found in the output, but papers are "
+                    "available. Add \\autocite{key} or \\textcite{key} commands "
+                    "to cite relevant sources."
+                ),
+                "severity": "error",
+            })
+            return issues
+
+        # Flag unknown citation keys
         for key in cited_keys:
-            # Check if citation key matches any known paper
-            matched = any(
-                key.lower() in val or val in key.lower()
-                for val in known_values
-            )
-            if not matched:
+            if key not in valid_keys:
                 issues.append({
                     "type": "citation",
-                    "description": f"\\cite{{{key}}} does not match any paper in the project library",
+                    "description": (
+                        f"Citation key '{key}' does not match any known "
+                        f"citation key in the project library"
+                    ),
                     "severity": "warning",
                 })
 
@@ -234,10 +241,10 @@ class ValidationAgent:
             return {"has_issues": False, "issues": [], "fixed_content": content}
 
         # Gather known citation keys for the prompt
-        known_names = {}
+        known_cite_keys: dict = {}
         if self._graph_store and ctx.paper_ids:
-            known_names = self._graph_store.resolve_paper_names(ctx.paper_ids)
-        known_keys_str = ", ".join(known_names.values()) if known_names else "(none available)"
+            known_cite_keys = self._graph_store.resolve_cite_keys(ctx.paper_ids)
+        known_keys_str = ", ".join(sorted(known_cite_keys.values())) if known_cite_keys else "(none available)"
 
         # Ruleset description
         ruleset_desc = "(no specific rules)"

@@ -75,9 +75,19 @@ def validate_latex_syntax(content: str) -> LatexValidationResult:
 
 
 def extract_citations(content: str) -> list[str]:
-    """Extract all \\cite{...} keys from LaTeX content."""
-    # Matches \cite{key1,key2}, \citep{key}, \citet{key}, etc.
-    pattern = r"\\cite[tp]?\{([^}]+)\}"
+    """Extract all citation keys from LaTeX content.
+
+    Matches all common citation commands:
+      \\cite, \\citep, \\citet, \\autocite, \\textcite, \\parencite,
+      \\footcite, \\fullcite, \\citeauthor, \\citeyear, \\nocite,
+      and starred variants (e.g. \\autocite*).
+
+    The regex captures any ``\\<prefix>cite<suffix>{keys}`` pattern,
+    which covers both natbib and biblatex families.
+    """
+    # Matches \cite{...}, \autocite{...}, \textcite*{...}, \Autocite{...}, etc.
+    # Optional [] arguments (e.g. \autocite[p.~5]{key}) are skipped.
+    pattern = r"\\(?:[A-Za-z]*)?cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{([^}]+)\}"
     keys: list[str] = []
     for match in re.finditer(pattern, content):
         raw = match.group(1)
