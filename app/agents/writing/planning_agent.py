@@ -4,16 +4,19 @@ Planning Agent — gathers context before the writing agent runs.
 Operates in a unified planning loop:
 
   Round 1:
-    RAG query (user_message + section_target) → context
-    LLM(context, user_message, ruleset) → questions or []
+    Query Refiner → targeted search queries
+    RAG query (refined queries) → context
+    LLM(context, user_message, current_section, previous_attempt) → questions or []
     Save {context, questions} → return questions to user
 
   Round 2+ (user answers):
-    RAG query (user's answer text) → new_chunks
+    Query Refiner(user's answer) → targeted search queries
+    RAG query (refined queries) → new_chunks
     context = previous_context + new_chunks  (append, accept noise)
-    LLM(context, full_qna_history, user_message, ruleset) → questions or []
+    LLM(context, full_qna_history, user_message, previous_attempt) → questions or []
       → questions? → save, return to user, loop
-      → []? → build_instructions(context, qna_history, user_message, ruleset)
+      → []? → build_instructions(context, qna_history, user_message,
+                current_section, previous_attempt, conversation_history)
             → writing phase
 
 The loop terminates when the LLM returns an empty array, meaning it has
@@ -37,6 +40,8 @@ from app.agents.writing.prompts import (
     PLANNING_BUILD_INSTRUCTIONS_PROMPT,
     PLANNING_SYSTEM_PROMPT,
     PLANNING_USER_PROMPT,
+    QUERY_REFINER_SYSTEM_PROMPT,
+    QUERY_REFINER_USER_PROMPT,
 )
 from app.services.store import GraphRAGStore
 
@@ -102,8 +107,8 @@ class PlanningAgent:
         """
         Begin the planning phase (Round 1).
 
-        RAG queries with user_message + section_target.
-        LLM decides whether to ask questions or signal readiness.
+        Uses Query Refiner to produce targeted RAG queries, then retrieves
+        context and decides whether to ask the user questions.
 
         Returns:
             If questions needed:
@@ -128,8 +133,9 @@ class PlanningAgent:
         """
         Process user's Q&A transcript (Round 2+).
 
-        Appends the full Q&A transcript to qa_rounds, runs RAG on it,
-        appends results to accumulated_context, then runs the planning LLM.
+        Appends the full Q&A transcript to qa_rounds, runs Query Refiner
+        + RAG on it, appends results to accumulated_context, then runs
+        the planning LLM.
 
         Returns same structure as start_planning.
         """
@@ -152,39 +158,48 @@ class PlanningAgent:
     ) -> dict:
         """
         Execute one round of the planning loop:
-        1. RAG query → append to accumulated_context
-        2. LLM → questions or []
-        3. If questions → return them; if [] → build instructions
+        1. Query Refiner → targeted search queries
+        2. RAG retrieval with refined queries → append to accumulated_context
+        3. LLM → questions or []
+        4. If questions → return them; if [] → build instructions
         """
         round_num = len(planning_state.qa_rounds)  # 0 for round 1
 
-        # ── 1. RAG retrieval ─────────────────────────────────────────────
+        # ── 1. Query Refiner → targeted search queries ───────────────────
         if round_num == 0:
-            # Round 1: query with user_message + section_target
-            rag_query = f"{ctx.user_message} {ctx.section_target or ''}"
+            refiner_input = ctx.user_message
         else:
-            # Round 2+: query with the latest Q&A transcript
-            rag_query = planning_state.qa_rounds[-1]
+            refiner_input = planning_state.qa_rounds[-1]
+
+        refined_queries = await self._refine_query(
+            refiner_input, ctx, planning_state, dbg=dbg,
+        )
 
         if dbg:
-            dbg.log_step(_PHASE, "rag_query_text", rag_query)
+            dbg.log_step(_PHASE, "refined_queries", refined_queries)
 
-        new_context = await self._retrieve_rag_context(rag_query, ctx.paper_ids, dbg=dbg)
-
-        # Append to accumulated context
-        if new_context:
-            if planning_state.accumulated_context:
-                planning_state.accumulated_context += "\n\n" + new_context
-            else:
-                planning_state.accumulated_context = new_context
+        # ── 2. RAG retrieval with refined queries ────────────────────────
+        if refined_queries:
+            for query in refined_queries:
+                new_context = await self._retrieve_rag_context(
+                    query, ctx.paper_ids, dbg=dbg,
+                )
+                if new_context:
+                    if planning_state.accumulated_context:
+                        planning_state.accumulated_context += "\n\n" + new_context
+                    else:
+                        planning_state.accumulated_context = new_context
+        else:
+            if dbg:
+                dbg.log_step(_PHASE, "rag_skipped", "query refiner returned empty — no RAG needed")
 
         if dbg:
             dbg.log_step(_PHASE, "accumulated_context_length", len(planning_state.accumulated_context))
 
-        # ── 2. Build Q&A history string ──────────────────────────────────
+        # ── 3. Build Q&A history string ──────────────────────────────────
         qa_history = self._format_qa_history(planning_state)
 
-        # ── 3. LLM: ask questions or signal readiness ────────────────────
+        # ── 4. LLM: ask questions or signal readiness ────────────────────
         questions = await self._ask_or_ready(ctx, planning_state, qa_history, dbg=dbg)
 
         if questions:
@@ -212,7 +227,7 @@ class PlanningAgent:
                 ],
             }
 
-        # ── 4. LLM returned [] — build instructions ─────────────────────
+        # ── 5. LLM returned [] — build instructions ─────────────────────
         if dbg:
             dbg.log_step(_PHASE, "round_result", {"needs_more": False})
 
@@ -226,6 +241,56 @@ class PlanningAgent:
             "planning_state": planning_state,
             "instructions": instructions,
         }
+
+    # ── Query Refiner ────────────────────────────────────────────────────
+
+    async def _refine_query(
+        self,
+        raw_input: str,
+        ctx: WritingContext,
+        planning_state: PlanningState,
+        dbg: Optional["WritePipelineDebugger"] = None,
+    ) -> list[str]:
+        """
+        Call the Query Refiner LLM to produce targeted search queries.
+
+        Returns a list of query strings, or empty list if no RAG needed.
+        """
+        user_prompt = QUERY_REFINER_USER_PROMPT.format(
+            user_message=raw_input,
+            section_target=ctx.section_target or "(not specified)",
+            accumulated_context=planning_state.accumulated_context[:2000] if planning_state.accumulated_context else "(none — first retrieval round)",
+            previous_attempt=ctx.previous_attempt[:2000] if ctx.previous_attempt else "(none)",
+        )
+
+        if dbg:
+            dbg.log_step(_PHASE, "query_refiner_prompt", user_prompt)
+
+        messages = [
+            ChatMessage(role="system", content=QUERY_REFINER_SYSTEM_PROMPT),
+            ChatMessage(role="user", content=user_prompt),
+        ]
+
+        async with (dbg.llm_timer("planning", "query_refiner") if dbg else _noop_ctx()) as _t:
+            response = await self._llm.achat(messages)
+        raw = _strip_json_fences((response.message.content or "").strip())
+
+        if dbg:
+            dbg.log_step(_PHASE, "query_refiner_raw_response", raw)
+
+        try:
+            data = json.loads(raw)
+            if not isinstance(data, list):
+                raise ValueError("Expected a JSON array")
+            # Filter to strings only
+            queries = [q for q in data if isinstance(q, str) and q.strip()]
+            return queries
+        except (json.JSONDecodeError, ValueError) as exc:
+            logger.warning("Query Refiner returned invalid JSON (%s), using fallback query", exc)
+            if dbg:
+                dbg.log_step(_PHASE, "query_refiner_parse_error", str(exc))
+            # Fallback: use raw input + section_target as a single query
+            return [f"{raw_input} {ctx.section_target or ''}".strip()]
 
     # ── RAG retrieval ────────────────────────────────────────────────────
 
@@ -314,6 +379,7 @@ class PlanningAgent:
             rag_context=planning_state.accumulated_context or "(no RAG context available)",
             referenced_sections=_format_referenced_sections(ctx.referenced_sections),
             current_section=ctx.current_section or "(empty)",
+            previous_attempt=ctx.previous_attempt or "(none — first attempt)",
             qa_history=qa_history or "(first round — no Q&A yet)",
         )
 
@@ -384,12 +450,26 @@ class PlanningAgent:
     ) -> str:
         """Synthesise all gathered info into markdown instructions for the writer."""
 
+        # Format conversation history
+        if ctx.conversation_history:
+            conv_text = "\n\n---\n\n".join(
+                f"### Output {i+1}\n{output[:500]}..."
+                if len(output) > 500
+                else f"### Output {i+1}\n{output}"
+                for i, output in enumerate(ctx.conversation_history)
+            )
+        else:
+            conv_text = "(no previous outputs in this session)"
+
         prompt = PLANNING_BUILD_INSTRUCTIONS_PROMPT.format(
             section_target=ctx.section_target or "unnamed",
             user_message=ctx.user_message,
             qa_history=qa_history or "(no Q&A — planning completed immediately)",
             rag_context=planning_state.accumulated_context or "(none)",
             referenced_sections=_format_referenced_sections(ctx.referenced_sections),
+            current_section=ctx.current_section or "(empty — new section)",
+            previous_attempt=ctx.previous_attempt or "(none — first attempt)",
+            conversation_history=conv_text,
         )
 
         if dbg:

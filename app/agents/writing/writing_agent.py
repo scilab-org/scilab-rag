@@ -1,10 +1,12 @@
 """
 Writing Agent — produces LaTeX content for a paper section.
 
-Supports five writing modes: write_new, extend, rewrite, fix_content, fix_latex.
-Each mode uses a mode-specific prompt template.  The agent always returns the
-COMPLETE section (not a patch), plus a human-readable diff summary for the
-chat timeline.
+Uses a single unified template.  The LLM infers the action (write new,
+extend, rewrite, fix) from the user's message and the available context.
+
+The agent always returns the COMPLETE section (not a patch), plus a
+structured explanation of what was done and why (replaces the old diff
+summary).
 """
 
 import logging
@@ -12,11 +14,12 @@ from typing import TYPE_CHECKING, Optional
 
 from llama_index.core.llms import ChatMessage, LLM
 
-from app.agents.writing.models import WritingContext, WritingMode
+from app.agents.writing.models import WritingContext
 from app.agents.writing.prompts import (
-    WRITING_DIFF_SUMMARY_PROMPT,
-    WRITING_MODE_PROMPTS,
+    WRITING_EXPLAIN_PROMPT,
     WRITING_SYSTEM_PROMPT,
+    WRITING_USER_PROMPT,
+    WRITING_USER_PROMPT_WITH_RULESET_ISSUES,
 )
 
 if TYPE_CHECKING:
@@ -28,10 +31,12 @@ _PHASE = "writing"
 
 
 class WritingAgent:
-    """Generates LaTeX content and a diff summary for a single section."""
+    """Generates LaTeX content and a structured explanation for a single section."""
 
-    def __init__(self, llm: LLM) -> None:
+    def __init__(self, llm: LLM, explain_llm: Optional[LLM] = None) -> None:
         self._llm = llm
+        # explain_llm can be a cheaper/faster model for the explanation step
+        self._explain_llm = explain_llm or llm
 
     async def write(
         self,
@@ -45,39 +50,133 @@ class WritingAgent:
             {
                 "section_target": str,
                 "content": str,          # full LaTeX
-                "diff_summary": str,     # human-readable changes for chat
             }
         """
-        if ctx.decision is None:
-            raise ValueError("WritingAgent requires ctx.decision to be set")
-        mode = ctx.decision.writing_mode
         section_target = ctx.section_target or "unnamed"
 
-        logger.info("Writing agent: mode=%s, section=%s", mode.value, section_target)
+        logger.info("Writing agent: section=%s", section_target)
 
         if dbg:
-            dbg.log_step(_PHASE, "mode", mode.value)
             dbg.log_step(_PHASE, "section_target", section_target)
 
-        # ── Build the mode-specific user prompt ──────────────────────────
-        template = WRITING_MODE_PROMPTS.get(mode.value)
-        if template is None:
-            raise ValueError(f"No prompt template for writing mode: {mode.value}")
-
-        user_prompt = template.format(
+        # ── Build the unified user prompt ────────────────────────────────
+        user_prompt = WRITING_USER_PROMPT.format(
             section_target=section_target,
             user_message=ctx.user_message,
-            current_section=ctx.current_section or "(empty)",
-            planning_instructions=ctx.planning_instructions or "(no planning context)",
+            current_section=ctx.current_section or "(empty — new section)",
+            previous_attempt=ctx.previous_attempt or "(none — first attempt)",
+            planning_instructions=ctx.planning_instructions or "(no planning context — use user's request and current section directly)",
             referenced_sections=_format_referenced_sections(ctx.referenced_sections),
             ruleset=_format_ruleset(ctx.ruleset),
             available_citations=_format_available_citations(ctx.cite_key_map),
         )
 
         if dbg:
-            dbg.log_step(_PHASE, "selected_template", mode.value)
             dbg.log_step(_PHASE, "writing_prompt", user_prompt)
 
+        latex_content = await self._call_writing_llm(user_prompt, dbg=dbg)
+
+        return {
+            "section_target": section_target,
+            "content": latex_content,
+        }
+
+    async def rewrite_with_ruleset_issues(
+        self,
+        ctx: WritingContext,
+        draft_with_issues: str,
+        ruleset_issues: str,
+        dbg: Optional["WritePipelineDebugger"] = None,
+    ) -> dict:
+        """
+        Re-run the writing agent with ruleset issues appended.
+
+        Called when ruleset validation finds style violations.
+        Only called once (single retry).
+
+        Returns same structure as write().
+        """
+        section_target = ctx.section_target or "unnamed"
+
+        logger.info("Writing agent (ruleset retry): section=%s", section_target)
+
+        if dbg:
+            dbg.log_step(_PHASE, "ruleset_retry", True)
+            dbg.log_step(_PHASE, "ruleset_issues", ruleset_issues)
+
+        user_prompt = WRITING_USER_PROMPT_WITH_RULESET_ISSUES.format(
+            section_target=section_target,
+            user_message=ctx.user_message,
+            current_section=ctx.current_section or "(empty — new section)",
+            previous_attempt=ctx.previous_attempt or "(none — first attempt)",
+            planning_instructions=ctx.planning_instructions or "(no planning context)",
+            referenced_sections=_format_referenced_sections(ctx.referenced_sections),
+            ruleset=_format_ruleset(ctx.ruleset),
+            available_citations=_format_available_citations(ctx.cite_key_map),
+            draft_with_issues=draft_with_issues,
+            ruleset_issues=ruleset_issues,
+        )
+
+        if dbg:
+            dbg.log_step(_PHASE, "ruleset_retry_prompt", user_prompt)
+
+        latex_content = await self._call_writing_llm(user_prompt, dbg=dbg)
+
+        return {
+            "section_target": section_target,
+            "content": latex_content,
+        }
+
+    async def explain_output(
+        self,
+        ctx: WritingContext,
+        final_content: str,
+        dbg: Optional["WritePipelineDebugger"] = None,
+    ) -> str:
+        """
+        Generate a structured explanation of what was written and why.
+
+        This replaces the old diff summary and is displayed in the chat
+        timeline so the user can decide whether to accept or reject.
+
+        Uses the explain_llm (can be a cheaper model).
+        """
+        section_target = ctx.section_target or "unnamed"
+
+        prompt = WRITING_EXPLAIN_PROMPT.format(
+            section_target=section_target,
+            user_message=ctx.user_message,
+            current_section=ctx.current_section or "(empty — new section)",
+            previous_attempt=ctx.previous_attempt or "(none — first attempt)",
+            final_content=_truncate(final_content, 3000),
+            planning_instructions=ctx.planning_instructions or "(no planning context)",
+            ruleset=ctx.ruleset or "(no ruleset)",
+        )
+
+        if dbg:
+            dbg.log_step(_PHASE, "explain_prompt", prompt)
+
+        messages = [
+            ChatMessage(role="user", content=prompt),
+        ]
+
+        async with (dbg.llm_timer("writing", "explain") if dbg else _noop_ctx()) as _t:
+            response = await self._explain_llm.achat(messages)
+        explanation = (response.message.content or "").strip()
+
+        if dbg:
+            dbg.log_step(_PHASE, "explain_response", explanation)
+
+        return explanation
+
+    # ── Internal helpers ─────────────────────────────────────────────────
+
+    async def _call_writing_llm(
+        self,
+        user_prompt: str,
+        dbg: Optional["WritePipelineDebugger"] = None,
+    ) -> str:
+        """Call the writing LLM and clean the response."""
         messages = [
             ChatMessage(role="system", content=WRITING_SYSTEM_PROMPT),
             ChatMessage(role="user", content=user_prompt),
@@ -96,53 +195,7 @@ class WritingAgent:
         if dbg:
             dbg.log_step(_PHASE, "cleaned_latex", latex_content)
 
-        # ── Generate diff summary ────────────────────────────────────────
-        diff_summary = await self._generate_diff_summary(
-            mode=mode,
-            section_target=section_target,
-            original=ctx.current_section,
-            updated=latex_content,
-            dbg=dbg,
-        )
-
-        return {
-            "section_target": section_target,
-            "content": latex_content,
-            "diff_summary": diff_summary,
-        }
-
-    async def _generate_diff_summary(
-        self,
-        mode: WritingMode,
-        section_target: str,
-        original: Optional[str],
-        updated: str,
-        dbg: Optional["WritePipelineDebugger"] = None,
-    ) -> str:
-        """Generate a human-readable summary of changes for the chat timeline."""
-
-        prompt = WRITING_DIFF_SUMMARY_PROMPT.format(
-            section_target=section_target,
-            writing_mode=mode.value,
-            original_content=original or "(no previous content — new section)",
-            updated_content=_truncate(updated, 3000),
-        )
-
-        if dbg:
-            dbg.log_step(_PHASE, "diff_summary_prompt", prompt)
-
-        messages = [
-            ChatMessage(role="user", content=prompt),
-        ]
-
-        async with (dbg.llm_timer("writing", "diff_summary") if dbg else _noop_ctx()) as _t:
-            response = await self._llm.achat(messages)
-        summary = (response.message.content or "").strip()
-
-        if dbg:
-            dbg.log_step(_PHASE, "diff_summary_response", summary)
-
-        return summary
+        return latex_content
 
 
 # ── Formatting helpers ───────────────────────────────────────────────────

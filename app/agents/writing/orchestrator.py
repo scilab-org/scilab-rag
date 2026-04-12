@@ -1,6 +1,6 @@
 """
-Writing Orchestrator — LLM-based intent classifier that routes each
-write-mode request to the appropriate agent pipeline.
+Writing Orchestrator — LLM-based binary classifier that decides whether
+a write-mode request needs planning (RAG + optional QnA) before writing.
 
 Stateless per request, except for checking planning_state to short-circuit
 back to the planning agent when questions are pending.
@@ -16,9 +16,7 @@ from app.agents.writing.models import (
     OrchestratorDecision,
     PlanningState,
     PlanningStatus,
-    ValidationScope,
     WritingContext,
-    WritingMode,
 )
 from app.agents.writing.prompts import (
     ORCHESTRATOR_SYSTEM_PROMPT,
@@ -42,7 +40,7 @@ class WritingOrchestrator:
        the user is answering planning questions.  Route directly to the
        planning agent without calling the LLM classifier.
     2. **LLM classification** — for all other requests, call the LLM to
-       determine writing_mode, validation_scope, invoke_planning.
+       determine invoke_planning (binary decision).
     """
 
     def __init__(self, llm: LLM) -> None:
@@ -63,7 +61,7 @@ class WritingOrchestrator:
             dbg: Optional debug tracer.
 
         Returns:
-            OrchestratorDecision describing the route for this request.
+            OrchestratorDecision with invoke_planning bool and reasoning.
         """
 
         # ── Short-circuit: planning questions pending ────────────────────
@@ -73,8 +71,6 @@ class WritingOrchestrator:
                 planning_state.status.value,
             )
             decision = OrchestratorDecision(
-                writing_mode=WritingMode.WRITE_NEW,   # placeholder — planning agent decides
-                validation_scope=ValidationScope.FULL,
                 invoke_planning=True,
                 reasoning=f"User is answering planning questions (status={planning_state.status.value})",
             )
@@ -96,7 +92,7 @@ class WritingOrchestrator:
         ctx: WritingContext,
         dbg: Optional["WritePipelineDebugger"] = None,
     ) -> OrchestratorDecision:
-        """Call the LLM to classify the user's writing intent."""
+        """Call the LLM to decide whether planning is needed."""
 
         # Format referenced sections for the prompt
         if ctx.referenced_sections:
@@ -157,7 +153,6 @@ class WritingOrchestrator:
         decision = _parse_decision(data, ctx)
 
         if dbg:
-            # Check if fallback was used (reasoning starts with "Fallback:")
             is_fallback = decision.reasoning.startswith("Fallback:")
             dbg.log_step(_PHASE, "fallback_used", is_fallback)
             dbg.log_step(_PHASE, "final_decision", decision.to_dict())
@@ -170,10 +165,12 @@ class WritingOrchestrator:
 def _parse_decision(data: dict, ctx: WritingContext) -> OrchestratorDecision:
     """Parse the LLM's JSON into a validated OrchestratorDecision."""
     try:
+        invoke_planning = data.get("invoke_planning")
+        if invoke_planning is None:
+            raise KeyError("invoke_planning")
+
         return OrchestratorDecision(
-            writing_mode=WritingMode(data["writing_mode"]),
-            validation_scope=ValidationScope(data["validation_scope"]),
-            invoke_planning=bool(data.get("invoke_planning", False)),
+            invoke_planning=bool(invoke_planning),
             reasoning=data.get("reasoning", ""),
         )
     except (KeyError, ValueError) as exc:
@@ -185,22 +182,17 @@ def _fallback_decision(ctx: WritingContext) -> OrchestratorDecision:
     """
     Conservative fallback when LLM classification fails.
 
-    Heuristic:
-    - No current_section → write_new with planning
-    - Has current_section → extend without planning
+    Heuristic: invoke planning when in doubt — better to have context
+    and not need it than to hallucinate without it.
     """
     if not ctx.current_section:
         return OrchestratorDecision(
-            writing_mode=WritingMode.WRITE_NEW,
-            validation_scope=ValidationScope.FULL,
             invoke_planning=True,
-            reasoning="Fallback: no current section → write_new with planning",
+            reasoning="Fallback: no current section — invoke planning for safety",
         )
     return OrchestratorDecision(
-        writing_mode=WritingMode.EXTEND,
-        validation_scope=ValidationScope.FULL,
-        invoke_planning=False,
-        reasoning="Fallback: has current section → extend without planning",
+        invoke_planning=True,
+        reasoning="Fallback: LLM parse failed — invoke planning for safety",
     )
 
 

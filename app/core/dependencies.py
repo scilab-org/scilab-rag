@@ -133,15 +133,18 @@ def get_planning_agent():
 
 @lru_cache
 def get_writing_agent():
-    """Get cached WritingAgent (uses the chat LLM for LaTeX generation)."""
+    """Get cached WritingAgent (uses chat LLM for writing, summary LLM for explain)."""
     from app.agents.writing.writing_agent import WritingAgent
-    return WritingAgent(llm=get_chat_llm())
+    return WritingAgent(llm=get_chat_llm(), explain_llm=get_summary_llm())
 
 @lru_cache
 def get_validation_agent():
-    """Get cached ValidationAgent (uses chat LLM + Graph store for checks)."""
+    """Get cached ValidationAgent (structural LaTeX checks + LLM fixer)."""
     from app.agents.writing.validation_agent import ValidationAgent
-    return ValidationAgent(
-        llm=get_chat_llm(),
-        graph_store=get_graph_store(),
-    )
+    return ValidationAgent(llm=get_chat_llm())
+
+@lru_cache
+def get_ruleset_validator():
+    """Get cached RulesetValidator (checks output against user-provided style rules)."""
+    from app.agents.writing.ruleset_validator import RulesetValidator
+    return RulesetValidator(llm=get_chat_llm())

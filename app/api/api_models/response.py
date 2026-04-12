@@ -92,11 +92,9 @@ class WritingOutput(CamelCaseModel):
 
 
 class ValidationSummary(CamelCaseModel):
-    """Summary of the validation agent's auto-fix loop."""
-    iterations: int = Field(..., ge=0, le=3)
+    """Summary of the structural LaTeX validation step."""
     issues_found: int = Field(..., ge=0)
     issues_fixed: int = Field(..., ge=0)
-    scope: str = Field(..., description="full | content_only | syntax_only | style_only")
 
 
 class QuestionOption(CamelCaseModel):

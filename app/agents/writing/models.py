@@ -10,27 +10,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 
 # ── Enums ────────────────────────────────────────────────────────────────
-
-class WritingMode(str, Enum):
-    """What the writing agent should do with the section."""
-    WRITE_NEW = "write_new"
-    EXTEND = "extend"
-    REWRITE = "rewrite"
-    FIX_CONTENT = "fix_content"
-    FIX_LATEX = "fix_latex"
-
-
-class ValidationScope(str, Enum):
-    """How deeply the validation agent should inspect the output."""
-    FULL = "full"
-    CONTENT_ONLY = "content_only"
-    SYNTAX_ONLY = "syntax_only"
-    STYLE_ONLY = "style_only"
-
 
 class PlanningStatus(str, Enum):
     """Status of the planning phase stored in session.context JSONB."""
@@ -44,18 +27,14 @@ class PlanningStatus(str, Enum):
 @dataclass
 class OrchestratorDecision:
     """
-    The output of the orchestrator's LLM classification.
-    Tells downstream agents exactly what to do for this request.
+    Binary decision from the orchestrator LLM.
+    Determines only whether the planning phase (RAG + QnA) should run.
     """
-    writing_mode: WritingMode
-    validation_scope: ValidationScope
     invoke_planning: bool
     reasoning: str = ""
 
     def to_dict(self) -> dict:
         return {
-            "writing_mode": self.writing_mode.value,
-            "validation_scope": self.validation_scope.value,
             "invoke_planning": self.invoke_planning,
             "reasoning": self.reasoning,
         }
@@ -115,7 +94,7 @@ class PlanningState:
 class WritingContext:
     """
     Everything a downstream agent needs to do its job.
-    Built by the orchestrator and enriched by the planning agent.
+    Built fresh each request from the HTTP body + session context.
     """
     # From the request
     user_message: str
@@ -133,3 +112,9 @@ class WritingContext:
 
     # Populated in chat.py before the writing agent runs (paper_id → cite_key)
     cite_key_map: Dict[str, str] = field(default_factory=dict)
+
+    # Loaded from session.context["latest_output"] — last written content
+    previous_attempt: Optional[str] = None
+
+    # Last N written outputs from DB messages — passed to build_instructions only
+    conversation_history: List[str] = field(default_factory=list)
