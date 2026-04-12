@@ -201,7 +201,7 @@ def _create_converter() -> DocumentConverter:
             max_tokens=1024,    
         ),
         headers={
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {settings.OPEN_ROUTER_API_KEY_IMAGE_MODEL}",
             "X-Title": "docling-pdf-parser",
         },
         timeout=120,
@@ -218,7 +218,7 @@ def _create_converter() -> DocumentConverter:
     code_formula_api_options = ApiVlmEngineOptions(
         url=AnyUrl(settings.OPENROUTER_API_URL_CHAT),
         headers={
-            "Authorization": f"Bearer {settings.OPENROUTER_API_KEY}",
+            "Authorization": f"Bearer {settings.OPEN_ROUTER_API_KEY_IMAGE_MODEL}",
             "X-Title": "docling-pdf-parser",
         },
         params={

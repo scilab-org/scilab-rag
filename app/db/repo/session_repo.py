@@ -21,11 +21,15 @@ class ChatSessionRepository:
         user_id: str,
         title: str = "New chat",
         project_id: Optional[str] = None,
+        section_id: Optional[str] = None,
+        section_target: Optional[str] = None,
     ) -> ChatSession:
         session = ChatSession(
             user_id=user_id,
             title=title,
             project_id=project_id,
+            section_id=section_id,
+            section_target=section_target,
         )
         self._db.add(session)
         await self._db.flush()
@@ -50,21 +54,39 @@ class ChatSessionRepository:
         self,
         user_id: str,
         project_id: str,
+        section_id: Optional[str] = None,
         limit: int = 50,
         offset: int = 0,
     ) -> list[ChatSession]:
-        """Return sessions for a user scoped to a project, most recently updated first."""
+        """Return sessions for a user scoped to a project, most recently updated first.
+        
+        If section_id is provided, filters to sessions for that specific section.
+        """
+        stmt = select(ChatSession).where(
+            ChatSession.user_id == user_id,
+            ChatSession.project_id == project_id,
+        )
+        if section_id is not None:
+            stmt = stmt.where(ChatSession.section_id == section_id)
+        stmt = stmt.order_by(ChatSession.updated_at.desc()).limit(limit).offset(offset)
+        result = await self._db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def get_by_section(
+        self,
+        project_id: str,
+        user_id: str,
+        section_id: str,
+    ) -> Optional[ChatSession]:
+        """Return the session for a specific section within a project, or None."""
         result = await self._db.execute(
-            select(ChatSession)
-            .where(
+            select(ChatSession).where(
                 ChatSession.user_id == user_id,
                 ChatSession.project_id == project_id,
+                ChatSession.section_id == section_id,
             )
-            .order_by(ChatSession.updated_at.desc())
-            .limit(limit)
-            .offset(offset)
         )
-        return list(result.scalars().all())
+        return result.scalar_one_or_none()
 
     async def update_title(
         self,
@@ -87,7 +109,7 @@ class ChatSessionRepository:
         session_id: uuid.UUID,
         context: dict,
     ) -> None:
-        """Update the JSONB context field (summary, summary_at)."""
+        """Update the JSONB context field (summary, summary_at, planning_state)."""
         await self._db.execute(
             update(ChatSession)
             .where(ChatSession.id == session_id)

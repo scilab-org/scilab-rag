@@ -33,6 +33,8 @@ def parse_fn(response_str: str) -> Tuple[List, List]:
         return entities, relationships
     
     json_str = match.group(0)
+    json_str = json_str.replace("{{", "{").replace("}}", "}")
+
     
     # Parse JSON
     try:
@@ -67,28 +69,6 @@ def normalize_entity_name(name: str) -> str:
     return name
 
 
-def normalize_entity_key(name: str) -> str:
-    """Light normalization for SAME_AS matching across papers.
-    
-    Only normalizes case and separators. Preserves word structure
-    so that nuance is not lost.
-    
-    Examples:
-        "Transformer"       -> "transformer"
-        "Transformer Model" -> "transformer model"  (different from "transformer")
-        "SARS-CoV-2"        -> "sars cov 2"
-        "sars-cov-2"        -> "sars cov 2"         (matches above)
-        "Self-Attention"     -> "self attention"
-        "Self Attention"     -> "self attention"     (matches above)
-        "COVID-19"           -> "covid 19"
-    """
-    if not name:
-        return ""
-    name = name.strip().lower()
-    name = re.sub(r"[\s\-_]+", " ", name)  # unify separators to single space
-    name = name.strip()
-    return name
-
 def normalize_rel_label(label: str) -> str:
     """Normalise to UPPER_SNAKE_CASE for Neo4j relationship type consistency."""
     label = label.strip()
@@ -100,13 +80,11 @@ def normalize_rel_label(label: str) -> str:
 
 async def generate_chat_title(llm: LLM, message: str) -> str:
     prompt = (
-        "Generate a concise (max 7 words) scientific chat session title for the following message.\n\n"
+        "Generate a concise scientific chat session title for the following message.\n\n"
         f"Message: \"{message.strip()}\"\n\nTitle:"
     )
     response = await llm.achat([ChatMessage(role="user", content=prompt)])
     raw_title = str(response).strip().strip('"')
-    words = re.split(r"\s+", raw_title)
-    cut_title = " ".join(words[:7]).strip()
-    cut_title = re.sub(r'[!?.:,;\-]+$','', cut_title).strip()
-    final_title = cut_title[:1].upper() + cut_title[1:]
-    return final_title
+    raw_title = re.sub(r'^(assistant|title)\s*:\s*', '', raw_title, flags=re.IGNORECASE).strip()
+    raw_title = re.sub(r'[!?.:,;\-]+$', '', raw_title).strip()
+    return raw_title[:1].upper() + raw_title[1:]

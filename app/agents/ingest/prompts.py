@@ -2,74 +2,59 @@ KG_TRIPLET_EXTRACT_TMPL = """
 -Goal-
 You are extracting knowledge graph entities and relationships from a CHUNK of a scientific research paper.
 Multiple chunks are processed independently and merged later.
-Extract up to {max_knowledge_triplets} triplets explicitly supported by the chunk.
+Extract up to {max_knowledge_triplets} triplets clearly supported by the chunk.
 
-## SECTION CONTEXT
-This chunk comes from the following section(s) of the paper:
-{section_headings}
+## STRUCTURAL ANCHOR
+Every chunk must begin with exactly these two entities and one relationship:
+1. A Paper entity with entity_name = "{paper_title}"
+2. A Section entity with entity_name = "{section_headings}"
+3. A HAS_SECTION relationship from the Paper to the Section
 
 ## PAPER CONTEXT
 Paper Title: {paper_title}
+Section: {section_headings}
 
 ## ENTITY TYPES
-Allowed ENTITY TYPES (exactly these, no subtypes):
-- Paper     : a research paper (source or cited)
-- Author    : a person who authored a paper
-- Section   : a named structural part of the paper (e.g., "Introduction", "Results")
-- Concept   : a technical idea, theory, principle, or domain term
-- Method    : an algorithm, model, technique, or approach
-- Tool      : a software, instrument, device, or system used in the work
-- Dataset   : a dataset, corpus, cohort, specimen collection, or experimental data source
-- Finding   : a result, conclusion, observation, or measured outcome
-- Reference : a bibliographic citation
+Use the categories below as guidance. Pick the best fit. If no listed type fits well,
+introduce a short, clear PascalCase type (e.g. "Biomarker", "PolicyIntervention").
+Use the "Entity" fallback only as a last resort.
 
-## ALLOWED RELATIONSHIPS
-The "relation" field MUST be copied VERBATIM from this list. 
-Any other value is a critical error.
+  Universal   : Paper, Author, Institution, Venue
+  Scientific  : Concept, Theory, Hypothesis, Claim, Variable, Factor
+  Methods     : Method, Model, Algorithm, Framework, Protocol, Intervention
+  Artifacts   : Tool, Software, Dataset, Instrument, Benchmark, Scale
+  Outcomes    : Finding, Result, Metric, Statistic, Evidence
+  Structural  : Section, Table, Figure, Formula
 
-Paper-centered:
-- Paper    -> Section   : HAS_SECTION
-- Author   -> Paper     : WROTE
+## RELATIONSHIP VOCABULARY
+Prefer a label from this list. If none fits precisely, use a clear SCREAMING_SNAKE_CASE
+verb phrase (e.g. MODERATES, MEDIATES, PREDICTS, INTERACTS_WITH).
+Always use RELATED_TO when no more specific label applies.
 
-Structural:
-- Section  -> Concept   : MENTIONS
-- Section  -> Method    : DESCRIBES
-- Section  -> Finding   : PRESENTS
-- Section  -> Tool      : MENTIONS
-- Section  -> Dataset   : MENTIONS
-- Section -> Table   : PRESENTS
-- Section -> Formula : DEFINES
-
-Technical:
-- Method   -> Concept   : BASED_ON
-- Method   -> Tool      : IMPLEMENTED_IN
-- Method   -> Dataset   : EVALUATED_ON
-- Method   -> Method    : EXTENDS
-- Tool     -> Tool      : INTEGRATES
-- Finding  -> Method    : PRODUCED_BY
-- Concept  -> Concept   : RELATED_TO
-- Method  -> Formula : FORMALIZED_AS
-- Finding -> Table   : SUMMARIZED_IN
-
-CRITICAL RULES FOR RELATIONSHIPS:
-- If the correct relation is not in the list above → DROP the relationship entirely.
-- NEVER invent a relation string. NEVER use lowercase. NEVER use spaces.
-- "source_entity" and "target_entity" MUST exactly match an "entity_name" from your entities list.
-- The (source_type → target_type) pair MUST match the table above.
-  e.g. Method -> Dataset : EVALUATED_ON is valid.
-       Dataset -> Method : EVALUATED_ON is NOT valid.
+  Causal        : CAUSES, LEADS_TO, PREVENTS, REDUCES, INCREASES, INFLUENCES,
+                  MODERATES, MEDIATES, PREDICTS, EXACERBATES, MITIGATES
+  Evaluative    : EVALUATES, COMPARES, OUTPERFORMS, MEASURES, VALIDATES, SUPPORTS,
+                  CONTRADICTS, REPLICATES
+  Methodological: USES, APPLIES, IMPLEMENTS, EXTENDS, BASED_ON, ADAPTED_FROM
+  Descriptive   : DEFINES, DESCRIBES, PRESENTS, MENTIONS, CHARACTERIZED_BY
+  Associative   : ASSOCIATED_WITH, CORRELATED_WITH, RELATED_TO
+  Structural    : HAS_SECTION, PART_OF, CITES, WRITTEN_BY, PUBLISHED_IN
 
 ## EXTRACTION RULES
-1. Extract ONLY entities and relationships explicitly stated in the chunk.
-2. Do NOT invent entities or relationships.
-3. "{paper_title}" is the SOURCE paper. If the chunk says "this paper" / "we propose", 
-   use this exact title as the Paper entity name.
-4. Do NOT force a Paper entity if the chunk has none.
-5. Use consistent canonical names across chunks (e.g., "DocLayNet" not "the DocLayNet dataset").
-6. Capture nuance in entity_description, not entity_type.
-7. Fewer than {max_knowledge_triplets} triplets is fine. 
-   Return empty lists if nothing is extractable.
-8. Each relationship must reference valid entities from your entities list.
+1. Always emit the Paper → Section anchor triplet first (see STRUCTURAL ANCHOR).
+2. Extract entities and relationships clearly supported by the chunk, including
+   those strongly implied by context. Do not hallucinate.
+3. "{paper_title}" is the source paper. Use this exact title if the chunk says
+   "this study", "we found", "the present paper", etc.
+4. Use canonical, concise names: "Social Media" not "the use of social media platforms".
+5. Every relationship must reference entities that appear in your entities list.
+6. Capture nuance in entity_description and relationship_description — not in the type.
+7. Fewer than {max_knowledge_triplets} triplets is fine.
+   Return empty lists only if the chunk is truly content-free (e.g. a reference list).
+8. Relation labels: SCREAMING_SNAKE_CASE, no spaces, no punctuation.
+   Source and target entity names must match exactly.
+9. Before finalising, do a quick self-check: are there important entities or
+   relationships present in the chunk that you have not yet captured? Add them now.
 
 ## OUTPUT FORMAT
 Valid JSON only. No markdown. No extra text. Start with {{ end with }}.
@@ -79,39 +64,35 @@ Required keys:
 - Each entity   : "entity_name", "entity_type", "entity_description"
 - Each relation : "source_entity", "target_entity", "relation", "relationship_description"
 
-## CORRECT EXAMPLE
+## EXAMPLES
 
-Input chunk:
-"We propose GraphRAG, a retrieval-augmented generation framework that uses 
-hierarchical Leiden clustering to detect communities in a Neo4j property graph. 
+### Example 1 — CS / ML paper
+
+Input chunk (paper: "GraphRAG: Community-Aware Retrieval", section: "3. Methods"):
+"We propose GraphRAG, a retrieval-augmented generation framework that uses
+hierarchical Leiden clustering to detect communities in a Neo4j property graph.
 The method is evaluated on the BEIR benchmark dataset and extends Dense Passage Retrieval."
 
 Output:
 {{
   "entities": [
-    {{"entity_name": "GraphRAG", "entity_type": "Method", "entity_description": "A retrieval-augmented generation framework using community detection over property graphs"}},
-    {{"entity_name": "Hierarchical Leiden Clustering", "entity_type": "Method", "entity_description": "A graph partitioning algorithm used to detect communities at multiple granularities"}},
+    {{"entity_name": "GraphRAG: Community-Aware Retrieval", "entity_type": "Paper", "entity_description": "The source paper proposing GraphRAG"}},
+    {{"entity_name": "3. Methods", "entity_type": "Section", "entity_description": "The methods section describing the GraphRAG framework design"}},
+    {{"entity_name": "GraphRAG", "entity_type": "Framework", "entity_description": "A retrieval-augmented generation framework that uses community detection over property graphs"}},
+    {{"entity_name": "Hierarchical Leiden Clustering", "entity_type": "Algorithm", "entity_description": "A graph partitioning algorithm used to detect communities at multiple granularities"}},
     {{"entity_name": "Neo4j", "entity_type": "Tool", "entity_description": "A property graph database used to store and query the knowledge graph"}},
-    {{"entity_name": "BEIR", "entity_type": "Dataset", "entity_description": "A heterogeneous benchmark for information retrieval evaluation"}},
+    {{"entity_name": "BEIR", "entity_type": "Benchmark", "entity_description": "A heterogeneous benchmark suite for information retrieval evaluation"}},
     {{"entity_name": "Dense Passage Retrieval", "entity_type": "Method", "entity_description": "A dense retrieval baseline that GraphRAG extends"}}
   ],
   "relationships": [
+    {{"source_entity": "GraphRAG: Community-Aware Retrieval", "target_entity": "3. Methods", "relation": "HAS_SECTION", "relationship_description": "This chunk belongs to the Methods section of the paper"}},
+    {{"source_entity": "GraphRAG", "target_entity": "3. Methods", "relation": "PART_OF", "relationship_description": "GraphRAG is the primary contribution described in this section"}},
     {{"source_entity": "GraphRAG", "target_entity": "Hierarchical Leiden Clustering", "relation": "BASED_ON", "relationship_description": "GraphRAG uses Leiden clustering as its community detection backbone"}},
-    {{"source_entity": "GraphRAG", "target_entity": "Neo4j", "relation": "IMPLEMENTED_IN", "relationship_description": "The property graph is stored and queried using Neo4j"}},
-    {{"source_entity": "GraphRAG", "target_entity": "BEIR", "relation": "EVALUATED_ON", "relationship_description": "GraphRAG's retrieval quality is measured against the BEIR benchmark"}},
-    {{"source_entity": "GraphRAG", "target_entity": "Dense Passage Retrieval", "relation": "EXTENDS", "relationship_description": "GraphRAG builds upon and improves over Dense Passage Retrieval"}}
+    {{"source_entity": "GraphRAG", "target_entity": "Neo4j", "relation": "IMPLEMENTS", "relationship_description": "The property graph is stored and queried in Neo4j"}},
+    {{"source_entity": "GraphRAG", "target_entity": "BEIR", "relation": "EVALUATES", "relationship_description": "GraphRAG retrieval quality is measured against the BEIR benchmark"}},
+    {{"source_entity": "GraphRAG", "target_entity": "Dense Passage Retrieval", "relation": "EXTENDS", "relationship_description": "GraphRAG builds upon and improves Dense Passage Retrieval"}}
   ]
 }}
-
-## WRONG EXAMPLE (never do this)
-{{
-  "relationships": [
-    {{"source_entity": "GraphRAG", "target_entity": "BEIR", "relation": "tested_on"}},
-    {{"source_entity": "the proposed method", "target_entity": "BEIR", "relation": "EVALUATED_ON"}},
-    {{"source_entity": "BEIR", "target_entity": "GraphRAG", "relation": "EVALUATED_ON"}}
-  ]
-}}
-Reasons: "tested_on" not in allowed list. "the proposed method" not in entities list. Direction is wrong.
 
 ## CHUNK TEXT
 {text}

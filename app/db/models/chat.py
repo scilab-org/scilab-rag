@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Optional
  
 from sqlalchemy import DateTime, ForeignKey, Index, String, Text, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -17,6 +18,12 @@ class ChatSession(Base):
     )
     user_id: Mapped[str] = mapped_column(String, nullable=False)
     project_id: Mapped[str] = mapped_column(String, nullable=False)
+    section_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, default=None,
+    )
+    section_target: Mapped[Optional[str]] = mapped_column(
+        String(100), nullable=True, default=None,
+    )
     title: Mapped[str] = mapped_column(
         String(255), nullable=False, default="New chat"
     )
@@ -42,6 +49,7 @@ class ChatSession(Base):
     __table_args__ = (
         Index("ix_chat_sessions_user_updated", "user_id", "updated_at"),
         Index("ix_chat_sessions_project_id", "project_id"),
+        Index("ix_chat_sessions_section", "project_id", "section_id"),
     )
 
 class ChatMessage(Base):

@@ -110,3 +110,41 @@ def get_keycloak_openid() -> KeycloakOpenID:
 def init_llama_settings():
     """Initialize LlamaIndex global settings."""
     get_llm()
+
+
+# ── Writing feature singletons ──────────────────────────────────────────
+
+@lru_cache
+def get_writing_orchestrator():
+    """Get cached WritingOrchestrator (uses the chat LLM for classification)."""
+    from app.agents.writing.orchestrator import WritingOrchestrator
+    return WritingOrchestrator(llm=get_chat_llm())
+
+@lru_cache
+def get_planning_agent():
+    """Get cached PlanningAgent (uses chat LLM + Graph RAG)."""
+    from app.agents.writing.planning_agent import PlanningAgent
+    return PlanningAgent(
+        llm=get_chat_llm(),
+        graph_store=get_graph_store(),
+        embed_model=get_embed_llm(),
+        similarity_top_k=settings.SIMILARITY_TOP_K,
+    )
+
+@lru_cache
+def get_writing_agent():
+    """Get cached WritingAgent (uses chat LLM for writing, summary LLM for explain)."""
+    from app.agents.writing.writing_agent import WritingAgent
+    return WritingAgent(llm=get_chat_llm(), explain_llm=get_summary_llm())
+
+@lru_cache
+def get_validation_agent():
+    """Get cached ValidationAgent (structural LaTeX checks + LLM fixer)."""
+    from app.agents.writing.validation_agent import ValidationAgent
+    return ValidationAgent(llm=get_chat_llm())
+
+@lru_cache
+def get_ruleset_validator():
+    """Get cached RulesetValidator (checks output against user-provided style rules)."""
+    from app.agents.writing.ruleset_validator import RulesetValidator
+    return RulesetValidator(llm=get_chat_llm())

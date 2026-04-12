@@ -79,6 +79,7 @@ data/markdown_exports/*.txt
 
 # Debug files
 raw.txt
+debug/
 
 # OS files
 .DS_Store

@@ -56,6 +56,8 @@ class MessageResponse(CamelCaseModel):
 class SessionResponse(CamelCaseModel):
     id: uuid.UUID
     project_id: Optional[str] = None
+    section_id: Optional[str] = None
+    section_target: Optional[str] = None
     title: str
     context: dict
     created_at: datetime
@@ -77,3 +79,43 @@ class MessageListResponse(CamelCaseModel):
 class SessionRenameResponse(CamelCaseModel):
     id: uuid.UUID
     title: str
+
+class SessionResponse(CamelCaseModel):
+    id: uuid.UUID
+    project_id: Optional[str] = None
+    title: str
+    context: dict
+    created_at: datetime
+    updated_at: datetime
+
+# ---------------------------------------------------------------------------
+# Writing-feature response models
+# ---------------------------------------------------------------------------
+
+class WritingOutput(CamelCaseModel):
+    """Full LaTeX output for the target section — lives in metadata.writing_output."""
+    section_target: str = Field(..., description="e.g. 'methodology', 'results'")
+    content: str = Field(..., description="Complete LaTeX content of the section")
+
+class MessageListResponse(CamelCaseModel):
+    messages: list[MessageResponse]
+    total: int
+
+class ValidationSummary(CamelCaseModel):
+    """Summary of the structural LaTeX validation step."""
+    issues_found: int = Field(..., ge=0)
+    issues_fixed: int = Field(..., ge=0)
+
+
+class QuestionOption(CamelCaseModel):
+    """A single option inside a select-type planning question."""
+    label: str
+    value: str
+
+
+class PlanningQuestion(CamelCaseModel):
+    """One structured question from the planning agent."""
+    type: str = Field(..., description="single_select | multi_select | text")
+    prompt: str = Field(..., description="The question text")
+    options: Optional[List[QuestionOption]] = Field(default=None, description="Choices for select-type questions")
+    allow_custom: bool = Field(default=True, description="Whether the user can type a custom answer")
