@@ -80,6 +80,13 @@ class SessionRenameResponse(CamelCaseModel):
     id: uuid.UUID
     title: str
 
+class SessionResponse(CamelCaseModel):
+    id: uuid.UUID
+    project_id: Optional[str] = None
+    title: str
+    context: dict
+    created_at: datetime
+    updated_at: datetime
 
 # ---------------------------------------------------------------------------
 # Writing-feature response models
@@ -90,6 +97,9 @@ class WritingOutput(CamelCaseModel):
     section_target: str = Field(..., description="e.g. 'methodology', 'results'")
     content: str = Field(..., description="Complete LaTeX content of the section")
 
+class MessageListResponse(CamelCaseModel):
+    messages: list[MessageResponse]
+    total: int
 
 class ValidationSummary(CamelCaseModel):
     """Summary of the structural LaTeX validation step."""

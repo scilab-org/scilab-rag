@@ -118,8 +118,6 @@ class GraphRAGExtractor(TransformComponent):
 
         text = node.get_content(metadata_mode="llm")
 
-      
-
         # Build section headings string from chunk metadata
         headings = node.metadata.get("headings") or []
         if headings:
@@ -196,6 +194,7 @@ class GraphRAGExtractor(TransformComponent):
                     "relation_description": description,
                 },
             )
+
             existing_relations.append(relation)
 
         node.metadata["paper_id"] = self.paper_info.paper_id

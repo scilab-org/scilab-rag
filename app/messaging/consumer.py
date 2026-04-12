@@ -13,16 +13,6 @@ payload in an envelope::
 This consumer unwraps the envelope, runs the KG ingestion pipeline, and
 publishes a ``PaperIngestionCompletedEvent`` (plain JSON, since the .NET
 side uses ``UseRawJsonDeserializer``).
-
-Idempotency
------------
-Before ingestion starts, a row keyed on ``paper_id`` is inserted into the
-``processed_messages`` table (PostgreSQL).  A duplicate message for the same
-paper triggers a primary-key violation (``IntegrityError``), which is caught
-and causes the message to be **silently acked** without re-running ingestion.
-
-If ingestion *fails*, the guard row is deleted so that a later retry can
-attempt the paper again.
 """
 
 import json
