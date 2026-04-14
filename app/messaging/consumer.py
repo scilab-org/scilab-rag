@@ -48,106 +48,146 @@ def _unwrap_masstransit_envelope(raw: bytes) -> dict:
 
 
 async def _handle_message(message: AbstractIncomingMessage) -> None:
-    """Process a single incoming ``PaperIngestionEvent``."""
-    async with message.process():
-        logger.info(
-            "Received PaperIngestionEvent (delivery_tag=%s)",
+    """Process a single incoming ``PaperIngestionEvent``.
+
+    Design: ack the message immediately after parsing the body, before running
+    the 14-minute ingestion pipeline.  This decouples the RabbitMQ ack lifetime
+    from the ingestion duration and eliminates ``ChannelInvalidStateError``.
+
+    Previously the code used ``async with message.process()`` which kept the
+    ack pending until __aexit__.  On Cloud Run the ingestion takes 10-20 minutes;
+    the RabbitMQ channel was closed by the broker before __aexit__ ran, causing:
+        aio_pika.message.channel → ChannelInvalidStateError
+    """
+    logger.info(
+        "Received PaperIngestionEvent (delivery_tag=%s)",
+        message.delivery_tag,
+    )
+
+    # ------------------------------------------------------------------
+    # Step 1: Parse the message body.  If parsing fails the message is
+    # malformed — nack without requeue so it goes to the dead-letter queue
+    # (or is discarded) rather than looping forever.
+    # ------------------------------------------------------------------
+    try:
+        payload = _unwrap_masstransit_envelope(message.body)
+        ingestion_msg = PaperIngestionMessage.model_validate(payload)
+    except Exception:
+        logger.exception(
+            "Failed to parse message body (delivery_tag=%s) — nacking without requeue",
             message.delivery_tag,
         )
+        await message.nack(requeue=False)
+        return
 
-        try:
-            payload = _unwrap_masstransit_envelope(message.body)
+    # ------------------------------------------------------------------
+    # Step 2: Ack immediately — ownership is transferred to this service.
+    # RabbitMQ is done; the channel state no longer matters for the rest
+    # of this function.
+    # ------------------------------------------------------------------
+    await message.ack()
+    logger.info(
+        "Message acked (delivery_tag=%s), starting ingestion for paper %s (%s)",
+        message.delivery_tag,
+        ingestion_msg.paper_id,
+        ingestion_msg.paper_name,
+    )
 
-            # MassTransit serialises with camelCase; map to our Pydantic model.
-            ingestion_msg = PaperIngestionMessage.model_validate(payload)
+    # ------------------------------------------------------------------
+    # Step 3: Idempotency guard — claim this paper_id before doing work.
+    # A duplicate message (re-sent by .NET after a perceived timeout) hits
+    # an IntegrityError here and is silently dropped.
+    # ------------------------------------------------------------------
+    try:
+        async with AsyncSessionLocal() as session:
+            try:
+                session.add(ProcessedMessage(paper_id=ingestion_msg.paper_id))
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                logger.warning(
+                    "Duplicate ingestion request for paper %s (%s) — "
+                    "already processed, skipping.",
+                    ingestion_msg.paper_id,
+                    ingestion_msg.paper_name,
+                )
+                return
+    except Exception:
+        logger.exception(
+            "Failed to write idempotency guard for paper %s — proceeding anyway",
+            ingestion_msg.paper_id,
+        )
 
-            # ------------------------------------------------------------------
-            # Idempotency guard: attempt to claim this paper_id.
-            # A duplicate message for an already-ingested paper will hit a
-            # primary-key violation here and be silently acked.
-            # ------------------------------------------------------------------
-            async with AsyncSessionLocal() as session:
-                try:
-                    session.add(ProcessedMessage(paper_id=ingestion_msg.paper_id))
-                    await session.commit()
-                except IntegrityError:
-                    await session.rollback()
-                    logger.warning(
-                        "Duplicate ingestion request for paper %s (%s) — "
-                        "already processed, skipping.",
-                        ingestion_msg.paper_id,
-                        ingestion_msg.paper_name,
-                    )
-                    return  # ack silently; message.process() context manager handles it
+    # ------------------------------------------------------------------
+    # Step 4: Run the ingestion pipeline and publish the outcome.
+    # ------------------------------------------------------------------
+    try:
+        result = await ingest_paper_to_kg(
+            paper_id=ingestion_msg.paper_id,
+            paper_name=ingestion_msg.paper_name,
+            parsed_text=ingestion_msg.parsed_text,
+            reference_key=ingestion_msg.reference_key,
+            authors=ingestion_msg.authors,
+            publisher=ingestion_msg.publisher,
+            journal_name=ingestion_msg.journal_name,
+            volume=ingestion_msg.volume,
+            pages=ingestion_msg.pages,
+            doi=ingestion_msg.doi,
+            publication_month_year=ingestion_msg.publication_month_year,
+        )
 
-            logger.info(
-                "Processing ingestion for paper %s (%s)",
-                ingestion_msg.paper_id,
-                ingestion_msg.paper_name,
-            )
-
-            result = await ingest_paper_to_kg(
-                paper_id=ingestion_msg.paper_id,
-                paper_name=ingestion_msg.paper_name,
-                parsed_text=ingestion_msg.parsed_text,
-                reference_key=ingestion_msg.reference_key,
-                authors=ingestion_msg.authors,
-                publisher=ingestion_msg.publisher,
-                journal_name=ingestion_msg.journal_name,
-                volume=ingestion_msg.volume,
-                pages=ingestion_msg.pages,
-                doi=ingestion_msg.doi,
-                publication_month_year=ingestion_msg.publication_month_year,
-            )
-
-            if not result.success:
-                # Ingestion failed — remove the guard row so a retry is possible.
+        if not result.success:
+            # Ingestion failed — remove the guard row so a future retry can run.
+            try:
                 async with AsyncSessionLocal() as session:
                     row = await session.get(ProcessedMessage, ingestion_msg.paper_id)
                     if row is not None:
                         await session.delete(row)
                         await session.commit()
+            except Exception:
+                logger.exception(
+                    "Failed to remove idempotency guard row for paper %s",
+                    ingestion_msg.paper_id,
+                )
 
-            # Publish the outcome back to .NET.
-            completed = PaperIngestionCompletedMessage(
-                paper_id=ingestion_msg.paper_id,
-                is_success=result.success,
-                error_message=result.error,
-            )
-            await publish_paper_ingestion_completed(completed)
+        completed = PaperIngestionCompletedMessage(
+            paper_id=ingestion_msg.paper_id,
+            is_success=result.success,
+            error_message=result.error,
+        )
+        await publish_paper_ingestion_completed(completed)
 
+    except Exception:
+        logger.exception(
+            "Unhandled error during ingestion for paper %s (%s)",
+            ingestion_msg.paper_id,
+            ingestion_msg.paper_name,
+        )
+        # Remove the guard row so a retry is possible.
+        try:
+            async with AsyncSessionLocal() as session:
+                row = await session.get(ProcessedMessage, ingestion_msg.paper_id)
+                if row is not None:
+                    await session.delete(row)
+                    await session.commit()
         except Exception:
             logger.exception(
-                "Unhandled error while processing PaperIngestionEvent "
-                "(delivery_tag=%s)",
-                message.delivery_tag,
+                "Failed to remove idempotency guard row for paper %s",
+                ingestion_msg.paper_id,
             )
-            # Even on unexpected errors, publish a failure event so the .NET
-            # side is not left waiting indefinitely.
-            try:
-                raw_payload = _unwrap_masstransit_envelope(message.body)
-                paper_id = raw_payload.get("paperId", raw_payload.get("paper_id"))
-                if paper_id is None:
-                    raise ValueError("paper_id could not be extracted from payload: {}".format(raw_payload))
-
-                # Remove the guard row (if it was inserted) so a retry can run.
-                try:
-                    async with AsyncSessionLocal() as session:
-                        row = await session.get(ProcessedMessage, str(paper_id))
-                        if row is not None:
-                            await session.delete(row)
-                            await session.commit()
-                except Exception:
-                    logger.exception("Failed to remove idempotency guard row for paper %s", paper_id)
-
-                completed = PaperIngestionCompletedMessage(
-                    paper_id=str(paper_id),
-                    is_success=False,
-                    error_message="Unexpected internal error during ingestion",
-                )
-                await publish_paper_ingestion_completed(completed)
-            except Exception:
-                logger.exception("Failed to publish failure event")
+        # Publish a failure event so the .NET side is not left waiting.
+        try:
+            completed = PaperIngestionCompletedMessage(
+                paper_id=ingestion_msg.paper_id,
+                is_success=False,
+                error_message="Unexpected internal error during ingestion",
+            )
+            await publish_paper_ingestion_completed(completed)
+        except Exception:
+            logger.exception(
+                "Failed to publish failure event for paper %s",
+                ingestion_msg.paper_id,
+            )
 
 
 async def start_consumer() -> Optional[str]:

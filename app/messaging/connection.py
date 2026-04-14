@@ -25,7 +25,7 @@ async def connect() -> AbstractRobustConnection:
         logger.info("Connecting to RabbitMQ")
         _connection = await aio_pika.connect_robust(
             settings.RABBITMQ_URI,
-            heartbeat=60,  
+            heartbeat=1200,  
         )
         logger.info("RabbitMQ connection established.")
     return _connection
