@@ -123,9 +123,10 @@ async def ingest_paper_to_kg(
             embed_model=embed_model,
             show_progress=True,
             llm=extract_llm,
+            use_async=False,
         )
         await asyncio.to_thread(
-            index.build_index_from_nodes, nodes  
+            index.build_index_from_nodes, nodes
         )
 
         logger.info("Ingestion succeeded for paper %s (%s)", paper_id, paper_name)

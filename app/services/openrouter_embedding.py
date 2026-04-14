@@ -20,8 +20,24 @@ from llama_index.core.embeddings import BaseEmbedding
 
 logger = logging.getLogger(__name__)
 
-_MAX_RETRIES = 4
+_MAX_RETRIES = 6
 _RETRY_BACKOFF_BASE = 2
+
+# All transient network-level httpx exceptions that should trigger a retry.
+# httpx.ReadError (broken pipe / [Errno 32]) is NOT a subclass of TimeoutException
+# or ConnectError — it must be listed explicitly. WriteError and CloseError are
+# included for the same reason (connection reset mid-stream).
+_RETRYABLE_NETWORK_ERRORS = (
+    httpx.TimeoutException,
+    httpx.ConnectError,
+    httpx.ReadError,    # "Broken pipe" — the bug that only surfaces on Cloud Run
+    httpx.WriteError,
+    httpx.CloseError,
+)
+
+# HTTP status codes that warrant a retry (server errors + rate limiting).
+# 429 is intentionally included here; previously only >= 500 was retried.
+_RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 
 class EmbeddingResponseError(Exception):
@@ -99,13 +115,51 @@ class OpenRouterEmbedding(BaseEmbedding):
         self._last_request_time = 0.0
         self._rate_limit_lock = threading.Lock()
 
-        # HTTP client
-        self._client = httpx.Client(timeout=self.timeout)
+        # HTTP client — configured for Cloud Run's proxy environment
+        self._client = self._create_client()
 
     def __del__(self):
         """Cleanup HTTP client."""
         if self._client:
             self._client.close()
+
+    def _create_client(self) -> httpx.Client:
+        """Create an httpx.Client with transport-level retries and Cloud-Run-friendly pool limits.
+
+        Key settings:
+        - transport retries=2: automatic low-level retry for TCP connection errors
+          before our application-level retry loop even kicks in.
+        - keepalive_expiry=30: Cloud Run's load balancer/NAT can silently close idle
+          TCP connections. Setting a short keepalive expiry (30s) ensures we don't
+          try to reuse connections that the proxy has already torn down, which would
+          produce a "Broken pipe" (ReadError) on the next request.
+        - max_keepalive_connections=5: limits the pool size to avoid holding too many
+          connections open in a single-worker Cloud Run container.
+        """
+        transport = httpx.HTTPTransport(retries=2)
+        return httpx.Client(
+            timeout=self.timeout,
+            transport=transport,
+            limits=httpx.Limits(
+                max_connections=10,
+                max_keepalive_connections=5,
+                keepalive_expiry=30,  # seconds
+            ),
+        )
+
+    def _reset_client(self) -> None:
+        """Close and recreate the HTTP client to discard all stale pooled connections.
+
+        Called after a ReadError / WriteError / CloseError to ensure the next retry
+        opens a fresh TCP connection rather than reusing a broken one from the pool.
+        """
+        try:
+            if self._client:
+                self._client.close()
+        except Exception:
+            pass
+        self._client = self._create_client()
+        logger.debug("httpx.Client reset after connection error")
 
     def _rate_limit(self):
         """Enforce rate limiting between requests (thread-safe)."""
@@ -138,7 +192,7 @@ class OpenRouterEmbedding(BaseEmbedding):
         all_embeddings: List[List[float]] = []
 
         if self._client is None:
-            self._client = httpx.Client(timeout=self.timeout)
+            self._client = self._create_client()
 
         # Process in batches
         for i in range(0, len(texts), self.batch_size):
@@ -163,6 +217,7 @@ class OpenRouterEmbedding(BaseEmbedding):
 
                     # Validate the response shape before accessing 'data'.
                     # OpenRouter may return HTTP 200 with an error payload on
+                    # rate limits or model errors.
                     _validate_embedding_response(result, context=f"batch[{i}:{i+len(batch)}]")
 
                     # OpenRouter returns embeddings in the same format as OpenAI
@@ -179,11 +234,17 @@ class OpenRouterEmbedding(BaseEmbedding):
                     break  # success, move to next batch
 
                 except httpx.HTTPStatusError as e:
-                    if e.response.status_code >= 500:
+                    if e.response.status_code in _RETRYABLE_STATUS_CODES:
                         last_error = e
-                        wait = _RETRY_BACKOFF_BASE ** (attempt + 1)
+                        # Respect Retry-After header when present (e.g. 429 responses)
+                        retry_after = e.response.headers.get("retry-after")
+                        wait = (
+                            float(retry_after)
+                            if retry_after
+                            else _RETRY_BACKOFF_BASE ** (attempt + 1)
+                        )
                         logger.warning(
-                            "Embedding batch request returned %s (attempt %d/%d), retrying in %ds",
+                            "Embedding batch request returned %s (attempt %d/%d), retrying in %.1fs",
                             e.response.status_code, attempt + 1, _MAX_RETRIES, wait,
                         )
                         time.sleep(wait)
@@ -193,6 +254,7 @@ class OpenRouterEmbedding(BaseEmbedding):
                         e.response.status_code, e.response.text,
                     )
                     raise
+
                 except EmbeddingResponseError as e:
                     last_error = e
                     wait = _RETRY_BACKOFF_BASE ** (attempt + 1)
@@ -202,17 +264,23 @@ class OpenRouterEmbedding(BaseEmbedding):
                     )
                     time.sleep(wait)
                     continue
-                except (httpx.TimeoutException, httpx.ConnectError) as e:
+
+                except _RETRYABLE_NETWORK_ERRORS as e:
                     last_error = e
+                    # For broken-pipe style errors, reset the client so the next attempt
+                    # opens a fresh TCP connection rather than reusing the broken one.
+                    if isinstance(e, (httpx.ReadError, httpx.WriteError, httpx.CloseError)):
+                        self._reset_client()
                     wait = _RETRY_BACKOFF_BASE ** (attempt + 1)
                     logger.warning(
-                        "Embedding batch request error: %s (attempt %d/%d), retrying in %ds",
-                        e, attempt + 1, _MAX_RETRIES, wait,
+                        "Embedding batch network error %s (attempt %d/%d), retrying in %ds: %s",
+                        type(e).__name__, attempt + 1, _MAX_RETRIES, wait, e,
                     )
                     time.sleep(wait)
                     continue
+
                 except Exception as e:
-                    logger.error("OpenRouter embedding failed: %s", e)
+                    logger.error("OpenRouter embedding failed with unexpected error: %s", e)
                     raise
 
             if last_error is not None:
@@ -228,7 +296,7 @@ class OpenRouterEmbedding(BaseEmbedding):
         self._rate_limit()
 
         if self._client is None:
-            self._client = httpx.Client(timeout=self.timeout)
+            self._client = self._create_client()
 
         last_error = None
         for attempt in range(_MAX_RETRIES):
@@ -248,11 +316,16 @@ class OpenRouterEmbedding(BaseEmbedding):
                 return result["data"][0]["embedding"]
 
             except httpx.HTTPStatusError as e:
-                if e.response.status_code >= 500:
+                if e.response.status_code in _RETRYABLE_STATUS_CODES:
                     last_error = e
-                    wait = _RETRY_BACKOFF_BASE ** (attempt + 1)
+                    retry_after = e.response.headers.get("retry-after")
+                    wait = (
+                        float(retry_after)
+                        if retry_after
+                        else _RETRY_BACKOFF_BASE ** (attempt + 1)
+                    )
                     logger.warning(
-                        "Embedding single request returned %s (attempt %d/%d), retrying in %ds",
+                        "Embedding single request returned %s (attempt %d/%d), retrying in %.1fs",
                         e.response.status_code, attempt + 1, _MAX_RETRIES, wait,
                     )
                     time.sleep(wait)
@@ -262,6 +335,7 @@ class OpenRouterEmbedding(BaseEmbedding):
                     e.response.status_code, e.response.text,
                 )
                 raise
+
             except EmbeddingResponseError as e:
                 last_error = e
                 wait = _RETRY_BACKOFF_BASE ** (attempt + 1)
@@ -271,17 +345,21 @@ class OpenRouterEmbedding(BaseEmbedding):
                 )
                 time.sleep(wait)
                 continue
-            except (httpx.TimeoutException, httpx.ConnectError) as e:
+
+            except _RETRYABLE_NETWORK_ERRORS as e:
                 last_error = e
+                if isinstance(e, (httpx.ReadError, httpx.WriteError, httpx.CloseError)):
+                    self._reset_client()
                 wait = _RETRY_BACKOFF_BASE ** (attempt + 1)
                 logger.warning(
-                    "Embedding single request error: %s (attempt %d/%d), retrying in %ds",
-                    e, attempt + 1, _MAX_RETRIES, wait,
+                    "Embedding single network error %s (attempt %d/%d), retrying in %ds: %s",
+                    type(e).__name__, attempt + 1, _MAX_RETRIES, wait, e,
                 )
                 time.sleep(wait)
                 continue
+
             except Exception as e:
-                logger.error("OpenRouter embedding failed: %s", e)
+                logger.error("OpenRouter embedding failed with unexpected error: %s", e)
                 raise
 
         logger.error(
@@ -290,6 +368,7 @@ class OpenRouterEmbedding(BaseEmbedding):
         if not last_error:
             last_error = Exception("Unknown error in embedding request")
         raise last_error
+
     # --- Required by BaseEmbedding ---
 
     def _get_query_embedding(self, query: str) -> List[float]:
@@ -321,8 +400,7 @@ class OpenRouterEmbedding(BaseEmbedding):
 
         LlamaIndex's default async implementation fans out to individual
         _aget_text_embedding calls, bypassing the batching in _embed_texts.
-        This override restores batching on the async code path (used by
-        PropertyGraphIndex during ingestion).
+        This override restores batching on the async code path.
         """
         return await asyncio.get_running_loop().run_in_executor(
             None, self._get_text_embeddings, texts
