@@ -45,9 +45,16 @@ build/
 # Node (if frontend exists in same repo)
 node_modules/
 
-# Docker files (optional, usually not needed in image)
+# Docker files
 docker-compose*.yml
 Dockerfile*
+
+# Deployment config — not needed inside the image
+deploy/
+
+# Notebooks
+*.ipynb
+.ipynb_checkpoints/
 
 data/
 .opencode/

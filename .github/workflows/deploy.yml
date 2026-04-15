@@ -27,7 +27,7 @@ on:
   workflow_dispatch:
 
 env:
-  PROJECT_DIR: /root/scilab/scilab-rag
+  PROJECT_DIR: /root/hyperdatalab/scilab-rag
 
 jobs:
   deploy:
@@ -50,7 +50,7 @@ jobs:
           script: |
             set -euo pipefail
 
-            PROJECT_DIR="/root/scilab/scilab-rag"
+            PROJECT_DIR="/root/hyperdatalab/scilab-rag"
             COMPOSE_DIR="$PROJECT_DIR/deploy/prod"
 
             # ------------------------------------------------------------------

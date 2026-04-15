@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup: Initialize connections
-    logger.info("Starting Scilab-AI Service...")
+    logger.info("Starting Scilab-AI Service ...")
     logger.info("Neo4j URI: %s", settings.NEO4J_URI)
 
     # --- RabbitMQ consumer ---
