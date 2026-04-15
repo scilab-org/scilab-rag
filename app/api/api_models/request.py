@@ -55,6 +55,19 @@ class WritingPayload(CamelCaseModel):
     referenced_sections: Optional[list[ReferencedSection]] = Field(default=None, description="Other sections user attached for cross-reference.")
     ruleset: Optional[str] = Field(default=None, description="Style/formatting rules as markdown")
 
+class FormatPaperStyleRequest(CamelCaseModel):
+    """Request to reformat a paper's LaTeX content to match a conference/journal template style."""
+    paper_content: str = Field(
+        ...,
+        min_length=1,
+        description="The full LaTeX content of the paper to be reformatted",
+    )
+    template_content: str = Field(
+        ...,
+        min_length=1,
+        description="The conference/journal LaTeX template content to follow",
+    )
+
 class SessionRenameRequest(CamelCaseModel):
     title: str = Field(..., min_length=1, max_length=255)
 

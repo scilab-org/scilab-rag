@@ -107,6 +107,10 @@ class ValidationSummary(CamelCaseModel):
     issues_fixed: int = Field(..., ge=0)
 
 
+class FormatPaperStyleResponse(CamelCaseModel):
+    """Response containing the reformatted LaTeX content."""
+    formatted_content: str = Field(..., description="The paper content reformatted to match the template style")
+
 class QuestionOption(CamelCaseModel):
     """A single option inside a select-type planning question."""
     label: str
