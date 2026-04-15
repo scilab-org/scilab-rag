@@ -1,0 +1,81 @@
+################################################################################
+#  Scheduled Docker cleanup on VPS 3 (scilab-rag)
+#
+#  Runs weekly (Sunday 3AM UTC) to remove unused Docker resources.
+#  Can also be triggered manually.
+#
+#  Required GitHub Secrets:
+#    VPS_HOST, VPS_USER, VPS_SSH_KEY, VPS_PORT
+################################################################################
+
+name: Docker Cleanup
+
+on:
+  schedule:
+    - cron: "0 3 * * 0"
+
+  workflow_dispatch:
+    inputs:
+      aggressive:
+        description: "Aggressive cleanup (removes ALL unused images, not just dangling)"
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  cleanup:
+    name: Cleanup Docker Resources
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Cleanup via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 10m
+          script: |
+            set -euo pipefail
+
+            echo "=========================================="
+            echo "  Docker Cleanup — $(date)"
+            echo "=========================================="
+
+            echo ">>> Disk usage BEFORE cleanup:"
+            df -h / | tail -1
+            docker system df
+
+            docker container prune -f
+
+            AGGRESSIVE="${{ github.event.inputs.aggressive || 'false' }}"
+            if [ "$AGGRESSIVE" = "true" ]; then
+              echo ">>> Removing ALL unused images (aggressive mode)..."
+              docker image prune -a -f
+            else
+              echo ">>> Removing dangling images..."
+              docker image prune -f
+            fi
+
+            docker volume prune -f
+            docker network prune -f
+            docker builder prune -f --filter "until=168h"
+
+            echo ">>> Disk usage AFTER cleanup:"
+            df -h / | tail -1
+            docker system df
+            echo "=========================================="
+            echo "  Cleanup completed at $(date)"
+            echo "=========================================="
+
+      - name: Cleanup summary
+        if: always()
+        run: |
+          echo "### Docker Cleanup Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Date** | $(date -u) |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Mode** | ${{ github.event.inputs.aggressive == 'true' && 'Aggressive' || 'Standard' }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY

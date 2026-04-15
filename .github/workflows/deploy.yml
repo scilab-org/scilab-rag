@@ -1,0 +1,151 @@
+################################################################################
+#  CI/CD — Deploy scilab-rag to VPS
+#
+#  Triggers on push to main when app code or config changes.
+#  Builds the Docker image directly on the VPS via SSH (no registry needed).
+#
+#  Required GitHub Secrets (set in repo → Settings → Secrets → Actions):
+#    VPS_HOST     — VPS 3 public IP or hostname
+#    VPS_USER     — SSH user (e.g. root)
+#    VPS_SSH_KEY  — Private SSH key (paste the full PEM, including headers)
+#    VPS_PORT     — SSH port (default: 22)
+################################################################################
+
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "app/**"
+      - "alembic/**"
+      - "Dockerfile"
+      - "requirements.txt"
+      - "deploy/prod/docker-compose.yml"
+      - "deploy/prod/nginx/**"
+
+  workflow_dispatch:
+
+env:
+  PROJECT_DIR: /root/scilab/scilab-rag
+
+jobs:
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    environment: production
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT || 22 }}
+          command_timeout: 30m
+          script: |
+            set -euo pipefail
+
+            PROJECT_DIR="/root/scilab/scilab-rag"
+            COMPOSE_DIR="$PROJECT_DIR/deploy/prod"
+
+            # ------------------------------------------------------------------
+            # 1. Pull latest code
+            # ------------------------------------------------------------------
+            cd "$PROJECT_DIR"
+            git fetch -q origin main
+            git reset --hard origin/main
+            echo ">>> Code updated to $(git rev-parse --short HEAD)"
+
+            cd "$COMPOSE_DIR"
+
+            # ------------------------------------------------------------------
+            # 2. Build new image
+            # ------------------------------------------------------------------
+            docker compose build --no-cache scilab-rag
+            echo ">>> Image built"
+
+            # ------------------------------------------------------------------
+            # 3. Run database migrations
+            # ------------------------------------------------------------------
+            docker compose run --rm scilab-rag alembic upgrade head
+            echo ">>> Migrations applied"
+
+            # ------------------------------------------------------------------
+            # 4. Restart the app
+            # ------------------------------------------------------------------
+            docker compose up -d --no-deps scilab-rag
+            echo ">>> App restarted"
+
+            # ------------------------------------------------------------------
+            # 5. Health check
+            # ------------------------------------------------------------------
+            sleep 30
+
+            CID=$(docker compose ps -q scilab-rag 2>/dev/null || true)
+            if [ -n "$CID" ]; then
+              HEALTH=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}' "$CID" 2>/dev/null || echo "unknown")
+              if [ "$HEALTH" = "unhealthy" ]; then
+                echo "ERROR: scilab-rag is unhealthy"
+                docker compose logs --tail=50 scilab-rag
+                exit 1
+              fi
+            fi
+
+            # ------------------------------------------------------------------
+            # 6. Reload nginx (graceful — picks up any config changes)
+            # ------------------------------------------------------------------
+            docker compose exec nginx nginx -s reload 2>/dev/null || true
+            echo ">>> Nginx reloaded"
+
+            # ------------------------------------------------------------------
+            # 7. Cleanup
+            # ------------------------------------------------------------------
+            docker image prune -f >/dev/null || true
+            docker builder prune -f --filter "until=24h" >/dev/null || true
+            echo "Deployment completed successfully"
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "### Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Branch** | \`${{ github.ref_name }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Commit** | \`${{ github.sha }}\` |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Triggered by** | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Status** | ${{ job.status }} |" >> $GITHUB_STEP_SUMMARY
+
+  notify-failure:
+    name: Notify on Failure
+    needs: deploy
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create failure issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Deployment failed — ${new Date().toISOString().split('T')[0]}`,
+              body: [
+                `## Deployment Failure`,
+                ``,
+                `| Property | Value |`,
+                `|----------|-------|`,
+                `| **Commit** | ${context.sha} |`,
+                `| **Branch** | ${context.ref} |`,
+                `| **Run** | [#${context.runNumber}](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}) |`,
+                `| **Actor** | @${context.actor} |`,
+                ``,
+                `Check the [workflow logs](${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}).`,
+              ].join('\n'),
+              labels: ['deployment', 'bug'],
+            });
