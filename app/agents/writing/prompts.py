@@ -113,8 +113,8 @@ QUERY_REFINER_USER_PROMPT = """\
 ## Target section
 {section_target}
 
-## Already retrieved context (from previous rounds)
-{accumulated_context}
+## Already retrieved context (from initial retrieval)
+{initial_context}
 
 ## Last written content (if modifying previous output)
 {previous_attempt}
@@ -177,8 +177,11 @@ The user wants to write the **{section_target}** section.
 ## User's original request
 {user_message}
 
-## RAG context from referenced papers (cumulative)
-{rag_context}
+## Section context (project, paper, and section background)
+{section_context}
+
+## RAG context from referenced papers
+{initial_context}
 
 ## Referenced sections (attached by user)
 {referenced_sections}
@@ -212,11 +215,17 @@ it will not see the raw Q&A or RAG chunks.
 ## User's original request
 {user_message}
 
+## Section context (project, paper, and section background)
+{section_context}
+
 ## Q&A with the user
 {qa_history}
 
-## RAG context from referenced papers
-{rag_context}
+## RAG context from original request
+{initial_context}
+
+## RAG context from user answers
+{answer_context}
 
 ## Referenced sections (attached by user)
 {referenced_sections}
@@ -367,9 +376,14 @@ You are explaining what was written or changed in a LaTeX section. \
 This explanation will be displayed to the user in a chat timeline so \
 they can decide whether to accept or reject the output.
 
-Be specific and reference actual content — cite keys used, structural \
-decisions made, and why. Do NOT just say "added content" — say WHAT \
-content and WHY.
+## CONDITIONAL SECTIONS — read this before writing anything
+
+- "Changes from previous version": include this section ONLY if \
+`previous_attempt` is non-empty. If `previous_attempt` is empty, null, \
+or says "No previous attempt", OMIT the section entirely — do not include \
+the heading, not even with a note saying there was no previous version.
+
+---
 
 ## Section: {section_target}
 
@@ -393,29 +407,31 @@ content and WHY.
 
 ## Output format
 
-Return a concise markdown explanation with these sections (omit sections \
-that don't apply):
+### Writing Output
+Describe the ACTUAL content produced — not the user's request, not what \
+the section "discusses" in the abstract. Be specific:
+- What claims or arguments were made
+- What structure was used (e.g. how many paragraphs, what ordering)
+- Which specific papers or findings were cited and for what purpose
+- What tone or framing was chosen
 
-### What I wrote
-(1-3 sentence high-level summary of the section content)
+FORBIDDEN phrases: "discusses", "covers", "addresses", "explores", \
+"provides an overview of", "summarizes". Say WHAT was written, not THAT it was written.
 
 ### Key decisions
-- Why specific papers were cited and for which claims
-- Structural choices (ordering, emphasis, framing)
-- Any trade-offs or judgement calls made
+- Why specific papers were cited and for which specific claims
+- Structural choices (ordering, emphasis, framing) and the reasoning
+- Any trade-offs or judgement calls made (e.g. what was omitted and why)
 
-(If no previous attempt found, YOU MUST NOT ADD this section "Changes from previous version")
+[CONDITIONAL — only if previous_attempt is non-empty]
 ### Changes from previous version
-(Only include if there was a previous attempt or existing content)
-- What was changed and why
-- What was preserved and why
+- Exactly what was changed and why
+- What was deliberately preserved and why
 
+---
 
-At the end, always add a final note:
+At the end, always add:
 WARNING: AI writing assistants are fallible. Please review the content carefully for factual accuracy, proper citations, and adherence to your intended meaning before accepting.
-
-Keep it concise but specific. The user needs enough detail to evaluate \
-the output without reading every line of LaTeX.
 """
 
 

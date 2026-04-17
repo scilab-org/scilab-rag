@@ -63,7 +63,8 @@ class PlanningState:
     """
     status: PlanningStatus = PlanningStatus.IDLE
     qa_rounds: list[str] = field(default_factory=list)
-    accumulated_context: str = ""             # RAG context, grows each round
+    initial_context: str = ""                 # RAG context from start_planning (round 1)
+    answer_context: str = ""                  # RAG context from process_answers (round 2)
     instructions: Optional[str] = None        # final markdown instructions for writing agent
 
     # ── Serialisation helpers ────────────────────────────────────────────
@@ -72,7 +73,8 @@ class PlanningState:
         return {
             "status": self.status.value,
             "qa_rounds": self.qa_rounds,
-            "accumulated_context": self.accumulated_context,
+            "initial_context": self.initial_context,
+            "answer_context": self.answer_context,
             "instructions": self.instructions,
         }
 
@@ -83,7 +85,8 @@ class PlanningState:
         return cls(
             status=PlanningStatus(data.get("status", "idle")),
             qa_rounds=data.get("qa_rounds", []),
-            accumulated_context=data.get("accumulated_context", ""),
+            initial_context=data.get("initial_context", ""),
+            answer_context=data.get("answer_context", ""),
             instructions=data.get("instructions"),
         )
 
@@ -102,6 +105,7 @@ class WritingContext:
     current_section: Optional[str] = None
     referenced_sections: list[dict] = field(default_factory=list)  # [{section_type, content}, ...]
     ruleset: Optional[str] = None
+    section_context: Optional[str] = None
     paper_ids: list[str] = field(default_factory=list)
 
     # Set by the orchestrator

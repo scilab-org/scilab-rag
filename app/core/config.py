@@ -55,7 +55,7 @@ class Settings(BaseSettings):
     MAX_TRIPLETS_PER_CHUNK: int = 20
     
     # Query Engine
-    SIMILARITY_TOP_K: int = 15
+    SIMILARITY_TOP_K: int = 10
 
     # OpenRouter Models
     OPENROUTER_EMBED_MODEL: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     HISTORY_LIMIT: int = 10
 
     # Writing pipeline debug (local dev only)
-    WRITING_DEBUG: bool = False
+    WRITING_DEBUG: bool = True
     WRITING_DEBUG_DIR: str = "debug/write_pipeline"
     WRITING_DEBUG_MAX_CONTENT: int = 5000
 

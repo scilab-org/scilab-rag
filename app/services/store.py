@@ -149,7 +149,7 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
         self,
         query_embedding: List[float],
         paper_ids: List[str],
-        top_k: int = 20,
+        top_k: int = 10,
     ) -> Dict[str, list]:
         """Retrieve context for the query pipeline.
 

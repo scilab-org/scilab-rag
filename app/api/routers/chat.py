@@ -267,6 +267,7 @@ async def _handle_write_mode(
             current_section=body.writing.current_section,
             referenced_sections=referenced,
             ruleset=body.writing.ruleset,
+            section_context=body.writing.section_context,
             paper_ids=paper_ids,
             previous_attempt=previous_attempt,
             conversation_history=conversation_history,
@@ -313,7 +314,7 @@ async def _handle_write_mode(
         planning_agent = get_planning_agent()
 
         if planning_state.status == PlanningStatus.ASKING:
-            # ── Branch A: user is answering planning questions ────────────
+            # ── Branch A: user is answering planning questions (always terminal) ──
             dbg.log_step("planning", "branch", "A_answering_questions")
 
             plan_result = await planning_agent.process_answers(
@@ -322,37 +323,7 @@ async def _handle_write_mode(
 
             dbg.log_step("planning", "process_answers_result_action", plan_result["action"])
 
-            if plan_result["action"] == "planning_questions":
-                # More questions needed — persist state and return questions
-                new_state = plan_result["planning_state"]
-                await _save_planning_state(new_state)
-
-                dbg.log_step("planning", "follow_up_questions", plan_result["questions"])
-                dbg.log_step("planning", "early_return", True)
-                dbg.finalize()
-
-                content = "I have some follow-up questions before I can continue writing."
-                metadata = {
-                    "model": settings.OPENROUTER_CHAT_MODEL,
-                    "writingAction": "planning_questions",
-                    "questionSchema": plan_result["questions"],
-                }
-
-                assistant_msg = await msg_repo.create(
-                    session_id=session.id,
-                    role="assistant",
-                    content=content,
-                    msg_metadata=metadata,
-                )
-                await session_repo.touch(session.id)
-
-                return ChatMessageResponse(
-                    session_id=session.id,
-                    user_message=MessageResponse.model_validate(user_msg),
-                    assistant_message=MessageResponse.model_validate(assistant_msg),
-                )
-
-            # Planning complete — instructions ready
+            # process_answers is always terminal — instructions ready
             ctx.planning_instructions = plan_result["instructions"]
             planning_state = plan_result["planning_state"]
             await _save_planning_state(planning_state)

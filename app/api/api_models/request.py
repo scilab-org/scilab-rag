@@ -54,6 +54,7 @@ class WritingPayload(CamelCaseModel):
     current_section: Optional[str] = Field(default=None, description="LaTeX content of the section being worked on (can be non-null even for write_new).")
     referenced_sections: Optional[list[ReferencedSection]] = Field(default=None, description="Other sections user attached for cross-reference.")
     ruleset: Optional[str] = Field(default=None, description="Style/formatting rules as markdown")
+    section_context: Optional[str] = Field(default=None, description="Pre-computed project/paper/section context for planning")
 
 class FormatPaperStyleRequest(CamelCaseModel):
     """Request to reformat a paper's LaTeX content to match a conference/journal template style."""

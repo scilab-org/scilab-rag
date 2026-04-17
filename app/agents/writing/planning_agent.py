@@ -1,26 +1,24 @@
 """
 Planning Agent — gathers context before the writing agent runs.
 
-Operates in a unified planning loop:
+Operates in a single-round planning flow:
 
-  Round 1:
+  start_planning (Round 1):
     Query Refiner → targeted search queries
-    RAG query (refined queries) → context
-    LLM(context, user_message, current_section, previous_attempt) → questions or []
-    Save {context, questions} → return questions to user
+    RAG query (refined queries) → initial_context
+    LLM(initial_context, user_message, current_section, previous_attempt) → questions or []
+    Save {initial_context, questions} → return questions to user
+    (If LLM returns [] → build_instructions immediately)
 
-  Round 2+ (user answers):
+  process_answers (always terminal):
     Query Refiner(user's answer) → targeted search queries
-    RAG query (refined queries) → new_chunks
-    context = previous_context + new_chunks  (append, accept noise)
-    LLM(context, full_qna_history, user_message, previous_attempt) → questions or []
-      → questions? → save, return to user, loop
-      → []? → build_instructions(context, qna_history, user_message,
-                current_section, previous_attempt, conversation_history)
-            → writing phase
+    RAG query (refined queries) → answer_context
+    build_instructions(initial_context, answer_context, qa_history)
+    → writing phase (never asks follow-up questions)
 
-The loop terminates when the LLM returns an empty array, meaning it has
-enough context to produce writing instructions.
+RAG context is stored as two separate labeled fields:
+  - initial_context: from the original user request (round 1)
+  - answer_context: from the user's Q&A answers (round 2)
 """
 
 import json
@@ -121,90 +119,36 @@ class PlanningAgent:
 
         planning_state = PlanningState(status=PlanningStatus.ASKING)
 
-        return await self._plan_round(ctx, planning_state, dbg=dbg)
-
-    async def process_answers(
-        self,
-        ctx: WritingContext,
-        planning_state: PlanningState,
-        user_answer: str,
-        dbg: Optional["WritePipelineDebugger"] = None,
-    ) -> dict:
-        """
-        Process user's Q&A transcript (Round 2+).
-
-        Appends the full Q&A transcript to qa_rounds, runs Query Refiner
-        + RAG on it, appends results to accumulated_context, then runs
-        the planning LLM.
-
-        Returns same structure as start_planning.
-        """
-        if dbg:
-            dbg.log_step(_PHASE, "mode", f"process_answers_round_{len(planning_state.qa_rounds) + 1}")
-            dbg.log_step(_PHASE, "user_answer", user_answer)
-
-        # Record this Q&A round
-        planning_state.qa_rounds.append(user_answer)
-
-        return await self._plan_round(ctx, planning_state, dbg=dbg)
-
-    # ── Core planning loop (one round) ───────────────────────────────────
-
-    async def _plan_round(
-        self,
-        ctx: WritingContext,
-        planning_state: PlanningState,
-        dbg: Optional["WritePipelineDebugger"] = None,
-    ) -> dict:
-        """
-        Execute one round of the planning loop:
-        1. Query Refiner → targeted search queries
-        2. RAG retrieval with refined queries → append to accumulated_context
-        3. LLM → questions or []
-        4. If questions → return them; if [] → build instructions
-        """
-        round_num = len(planning_state.qa_rounds)  # 0 for round 1
-
-        # ── 1. Query Refiner → targeted search queries ───────────────────
-        if round_num == 0:
-            refiner_input = ctx.user_message
-        else:
-            refiner_input = planning_state.qa_rounds[-1]
-
+        # ── 1. Query Refiner on user message ─────────────────────────────
         refined_queries = await self._refine_query(
-            refiner_input, ctx, planning_state, dbg=dbg,
+            ctx.user_message, ctx, planning_state, dbg=dbg,
         )
 
         if dbg:
             dbg.log_step(_PHASE, "refined_queries", refined_queries)
 
-        # ── 2. RAG retrieval with refined queries ────────────────────────
+        # ── 2. RAG retrieval → initial_context ───────────────────────────
         if refined_queries:
             for query in refined_queries:
                 new_context = await self._retrieve_rag_context(
                     query, ctx.paper_ids, dbg=dbg,
                 )
                 if new_context:
-                    if planning_state.accumulated_context:
-                        planning_state.accumulated_context += "\n\n" + new_context
+                    if planning_state.initial_context:
+                        planning_state.initial_context += "\n\n" + new_context
                     else:
-                        planning_state.accumulated_context = new_context
+                        planning_state.initial_context = new_context
         else:
             if dbg:
                 dbg.log_step(_PHASE, "rag_skipped", "query refiner returned empty — no RAG needed")
 
         if dbg:
-            dbg.log_step(_PHASE, "accumulated_context_length", len(planning_state.accumulated_context))
+            dbg.log_step(_PHASE, "initial_context_length", len(planning_state.initial_context))
 
-        # ── 3. Build Q&A history string ──────────────────────────────────
-        qa_history = self._format_qa_history(planning_state)
-
-        # ── 4. LLM: ask questions or signal readiness ────────────────────
-        questions = await self._ask_or_ready(ctx, planning_state, qa_history, dbg=dbg)
+        # ── 3. LLM: ask questions or signal readiness ────────────────────
+        questions = await self._ask_or_ready(ctx, planning_state, qa_history="", dbg=dbg)
 
         if questions:
-            # LLM needs more info — questions are transient (returned to FE),
-            # not persisted in planning_state
             planning_state.status = PlanningStatus.ASKING
 
             if dbg:
@@ -227,10 +171,74 @@ class PlanningAgent:
                 ],
             }
 
-        # ── 5. LLM returned [] — build instructions ─────────────────────
+        # ── 4. LLM returned [] — build instructions immediately ─────────
         if dbg:
             dbg.log_step(_PHASE, "round_result", {"needs_more": False})
 
+        qa_history = ""
+        instructions = await self._build_instructions(ctx, planning_state, qa_history, dbg=dbg)
+
+        planning_state.status = PlanningStatus.COMPLETE
+        planning_state.instructions = instructions
+
+        return {
+            "action": "planning_complete",
+            "planning_state": planning_state,
+            "instructions": instructions,
+        }
+
+    async def process_answers(
+        self,
+        ctx: WritingContext,
+        planning_state: PlanningState,
+        user_answer: str,
+        dbg: Optional["WritePipelineDebugger"] = None,
+    ) -> dict:
+        """
+        Process user's Q&A answers — always terminal.
+
+        Appends the Q&A transcript to qa_rounds, runs Query Refiner + RAG
+        on the answer (stored as answer_context), then goes straight to
+        _build_instructions. Never asks follow-up questions.
+
+        Always returns:
+            {"action": "planning_complete", "planning_state": ..., "instructions": "..."}
+        """
+        if dbg:
+            dbg.log_step(_PHASE, "mode", "process_answers_terminal")
+            dbg.log_step(_PHASE, "user_answer", user_answer)
+
+        # Record this Q&A round
+        planning_state.qa_rounds.append(user_answer)
+
+        # ── 1. Query Refiner on user answer ──────────────────────────────
+        refined_queries = await self._refine_query(
+            user_answer, ctx, planning_state, dbg=dbg,
+        )
+
+        if dbg:
+            dbg.log_step(_PHASE, "refined_queries", refined_queries)
+
+        # ── 2. RAG retrieval → answer_context ────────────────────────────
+        if refined_queries:
+            for query in refined_queries:
+                new_context = await self._retrieve_rag_context(
+                    query, ctx.paper_ids, dbg=dbg,
+                )
+                if new_context:
+                    if planning_state.answer_context:
+                        planning_state.answer_context += "\n\n" + new_context
+                    else:
+                        planning_state.answer_context = new_context
+        else:
+            if dbg:
+                dbg.log_step(_PHASE, "rag_skipped", "query refiner returned empty — no RAG needed")
+
+        if dbg:
+            dbg.log_step(_PHASE, "answer_context_length", len(planning_state.answer_context))
+
+        # ── 3. Build instructions (always — no more questions) ───────────
+        qa_history = self._format_qa_history(planning_state)
         instructions = await self._build_instructions(ctx, planning_state, qa_history, dbg=dbg)
 
         planning_state.status = PlanningStatus.COMPLETE
@@ -259,7 +267,7 @@ class PlanningAgent:
         user_prompt = QUERY_REFINER_USER_PROMPT.format(
             user_message=raw_input,
             section_target=ctx.section_target or "(not specified)",
-            accumulated_context=planning_state.accumulated_context[:2000] if planning_state.accumulated_context else "(none — first retrieval round)",
+            initial_context=planning_state.initial_context[:2000] if planning_state.initial_context else "(none — first retrieval round)",
             previous_attempt=ctx.previous_attempt[:2000] if ctx.previous_attempt else "(none)",
         )
 
@@ -376,7 +384,8 @@ class PlanningAgent:
         user_prompt = PLANNING_USER_PROMPT.format(
             section_target=ctx.section_target or "unnamed",
             user_message=ctx.user_message,
-            rag_context=planning_state.accumulated_context or "(no RAG context available)",
+            section_context=ctx.section_context or "(none)",
+            initial_context=planning_state.initial_context or "(no RAG context available)",
             referenced_sections=_format_referenced_sections(ctx.referenced_sections),
             current_section=ctx.current_section or "(empty)",
             previous_attempt=ctx.previous_attempt or "(none — first attempt)",
@@ -464,8 +473,10 @@ class PlanningAgent:
         prompt = PLANNING_BUILD_INSTRUCTIONS_PROMPT.format(
             section_target=ctx.section_target or "unnamed",
             user_message=ctx.user_message,
+            section_context=ctx.section_context or "(none)",
             qa_history=qa_history or "(no Q&A — planning completed immediately)",
-            rag_context=planning_state.accumulated_context or "(none)",
+            initial_context=planning_state.initial_context or "(none)",
+            answer_context=planning_state.answer_context or "(none — no Q&A round)",
             referenced_sections=_format_referenced_sections(ctx.referenced_sections),
             current_section=ctx.current_section or "(empty — new section)",
             previous_attempt=ctx.previous_attempt or "(none — first attempt)",
