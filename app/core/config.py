@@ -88,7 +88,7 @@ class Settings(BaseSettings):
     HISTORY_LIMIT: int = 10
 
     # Writing pipeline debug (local dev only)
-    WRITING_DEBUG: bool = True
+    WRITING_DEBUG: bool = False
     WRITING_DEBUG_DIR: str = "debug/write_pipeline"
     WRITING_DEBUG_MAX_CONTENT: int = 5000
 
