@@ -231,7 +231,7 @@ def _create_converter() -> DocumentConverter:
     code_formula_options = CodeFormulaVlmOptions(
         model_spec=code_formula_model_spec,
         engine_options=code_formula_api_options,
-        scale=1.0,
+        scale=0.75,
         extract_code=True,
         extract_formulas=True,
     )

@@ -3,6 +3,7 @@ import os
 import tempfile
 
 from fastapi import APIRouter, File, HTTPException, UploadFile
+from app.agents.ingest.document_parser import parse_document
 from app.api.api_models.request import PaperAutoTagRequest
 from app.api.api_models.response import PaperParseResponse, PaperAutoTagResponse
 from app.core.config import settings
@@ -29,9 +30,8 @@ async def parse_paper(file: UploadFile = File(...)):
             tmp.write(content)
             tmp_path = tmp.name
 
-        from app.agents.ingest.document_parser import parse_document_per_batch
         import asyncio
-        text = await asyncio.to_thread(parse_document_per_batch, tmp_path)
+        text = await asyncio.to_thread(parse_document, tmp_path)
 
         return PaperParseResponse(parsed_text=json.dumps(text))
 
