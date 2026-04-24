@@ -71,6 +71,8 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
     # ------------------------------------------------------------------
     try:
         payload = _unwrap_masstransit_envelope(message.body)
+        logger.info("Raw unwrapped payload keys: %s", list(payload.keys()))
+        logger.debug("Raw unwrapped payload: %s", payload)
         ingestion_msg = PaperIngestionMessage.model_validate(payload)
     except Exception:
         logger.exception(

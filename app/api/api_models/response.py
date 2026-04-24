@@ -20,8 +20,13 @@ from app.api.api_models import CamelCaseModel
 class PaperParseResponse(CamelCaseModel):
     parsed_text: str = Field(..., description="JSON string of parsed chunks from the PDF")
 
+class KeywordItem(CamelCaseModel):
+    """A single keyword with metadata about its source."""
+    name: str = Field(..., description="The keyword text")
+    is_from_paper: bool = Field(default=False, description="Whether this keyword was extracted from the paper itself")
+
 class PaperAutoTagResponse(CamelCaseModel):
-    tags: List[str] = Field(default_factory=list, description="Auto-generated tags for the paper")
+    tags: List[KeywordItem] = Field(default_factory=list, description="Auto-generated keywords with source flags")
 
 class PdfUploadResponse(CamelCaseModel):
     """Response after uploading a PDF."""
