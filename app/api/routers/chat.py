@@ -96,6 +96,9 @@ async def send_message(
     if body.mode == "write":
         return await _handle_write_mode(body, session, user_msg, paper_ids, db)
 
+    if body.mode == "validate":
+        return await _handle_validate_mode(body, session, user_msg, paper_ids, db)
+
     # 6. LLM query (chat mode — isolated)
     try:
         query_engine = GraphRAGQueryEngine(
@@ -104,10 +107,22 @@ async def send_message(
             llm=get_chat_llm(),
         )
 
+        _HISTORY_MSG_MAX_CHARS = 500
+
+        class _Msg:
+            __slots__ = ("role", "content")
+            def __init__(self, role: str, content: str) -> None:
+                self.role = role
+                self.content = content
+
+        history_truncated = [
+            _Msg(m.role, m.content[:_HISTORY_MSG_MAX_CHARS]) for m in history
+        ]
+
         query_request = ChatQuery(
             query_str=body.message,
             paper_ids=paper_ids,
-            history=history,
+            history=history_truncated,
             summary=session.context.get("summary"),
         )
 
@@ -181,7 +196,6 @@ async def _handle_write_mode(
         get_planning_agent,
         get_writing_agent,
         get_validation_agent,
-        get_ruleset_validator,
         get_graph_store,
     )
     from app.agents.writing.models import (
@@ -392,6 +406,8 @@ async def _handle_write_mode(
             dbg.log_step("writing", "cite_key_map", ctx.cite_key_map)
 
         writer = get_writing_agent()
+        validator = get_validation_agent()
+
         write_result = await writer.write(ctx, dbg=dbg)
 
         dbg.log_step("writing", "section_target", write_result["section_target"])
@@ -399,32 +415,8 @@ async def _handle_write_mode(
 
         draft_content = write_result["content"]
 
-        # ── 4. Ruleset validation (if ruleset provided) ──────────────────
-        if ctx.ruleset:
-            ruleset_validator = get_ruleset_validator()
-            ruleset_result = await ruleset_validator.validate(
-                draft_content, ctx.ruleset, dbg=dbg,
-            )
-
-            dbg.log_step("ruleset_validation", "result", {
-                "has_issues": ruleset_result["has_issues"],
-                "issue_count": len(ruleset_result["issues"]),
-            })
-
-            if ruleset_result["has_issues"] and ruleset_result["issues_text"]:
-                # Re-run writing agent ONCE with issues appended
-                logger.info("Ruleset issues found, re-running writing agent")
-                rewrite_result = await writer.rewrite_with_ruleset_issues(
-                    ctx, draft_content, ruleset_result["issues_text"], dbg=dbg,
-                )
-                draft_content = rewrite_result["content"]
-                dbg.log_step("ruleset_validation", "rewrite_content", draft_content)
-        else:
-            dbg.log_step("ruleset_validation", "skipped", "no ruleset configured")
-
-        # ── 5. LaTeX validation phase ────────────────────────────────────
-        validator = get_validation_agent()
-        val_result = await validator.validate(draft_content, ctx, dbg=dbg)
+        # ── 4. LaTeX validation phase ────────────────────────────────────
+        val_result = await validator.validate_latex(draft_content, ctx, dbg=dbg)
 
         final_content = val_result["content"]
         validation_summary = val_result["validation_summary"]
@@ -448,7 +440,6 @@ async def _handle_write_mode(
         dbg.log_step("explain", "explanation", explanation)
 
         # ── 7. Persist latest_output in session context ──────────────────
-        # Do NOT reset planning state — it persists across the session
         await _save_context(latest_output=final_content)
 
         # ── 8. Build response ────────────────────────────────────────────
@@ -494,6 +485,97 @@ async def _handle_write_mode(
         raise HTTPException(
             status_code=500,
             detail=f"Write-mode pipeline failed: {exc}",
+        )
+
+
+# ── Validate-mode handler ───────────────────────────────────────────────
+
+async def _handle_validate_mode(
+    body: ChatRequest,
+    session,
+    user_msg,
+    paper_ids: list[str],
+    db: AsyncSession,
+) -> ChatMessageResponse:
+    """
+    Validate-mode pipeline:
+        ruleset compliance check + citation fact-checking.
+
+    Returns a ChatMessageResponse where:
+    - content = markdown summary of validation findings
+    - metadata = { writingAction, validationDetail: { hasIssues, ruleIssues, citationIssues } }
+    """
+    from app.core.dependencies import get_validation_agent, get_graph_store
+    from app.agents.writing.models import WritingContext
+
+    msg_repo = ChatMessageRepository(db)
+    session_repo = ChatSessionRepository(db)
+
+    try:
+        if not body.writing:
+            raise HTTPException(
+                status_code=422,
+                detail="writing payload is required when mode='validate'",
+            )
+
+        graph_store = get_graph_store()
+        cite_key_map = graph_store.resolve_cite_keys(paper_ids) if paper_ids else {}
+
+        # Convert checklist items from payload to plain dicts
+        checklist_items = []
+        if body.writing.checklist_items:
+            checklist_items = [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "rule": item.rule,
+                    "weight": item.weight,
+                }
+                for item in body.writing.checklist_items
+            ]
+
+        ctx = WritingContext(
+            user_message=body.message,
+            section_target=body.section_target or session.section_target,
+            current_section=body.writing.current_section,
+            ruleset=body.writing.ruleset,
+            section_context=body.writing.section_context,
+            paper_ids=paper_ids,
+            cite_key_map=cite_key_map,
+            checklist_items=checklist_items,
+            journal_style=body.writing.journal_style,
+        )
+
+        validator = get_validation_agent()
+        result = await validator.validate_content(ctx)
+
+        assistant_msg = await msg_repo.create(
+            session_id=session.id,
+            role="assistant",
+            content=result["markdown_summary"],
+            msg_metadata={
+                "writingAction": "validation_result",
+                "validationDetail": {
+                    "hasIssues": result["has_issues"],
+                    "issues": result["issues"],
+                },
+            },
+        )
+        await session_repo.touch(session.id)
+
+        return ChatMessageResponse(
+            session_id=session.id,
+            user_message=MessageResponse.model_validate(user_msg),
+            assistant_message=MessageResponse.model_validate(assistant_msg),
+        )
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("Validate-mode pipeline failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"Validate-mode pipeline failed: {exc}",
         )
 
 

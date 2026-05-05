@@ -308,6 +308,15 @@ class GraphRAGStore(Neo4jPropertyGraphStore):
 
         return results
 
+    def retrieve_chunks(
+        self,
+        query_embedding: List[float],
+        paper_ids: List[str],
+        top_k: int = 3,
+    ) -> List[Dict]:
+        """Chunk-only retrieval for fact-checking. Source of truth from paper text."""
+        return self._retrieve_chunk_text(query_embedding, paper_ids, top_k)
+
     def _retrieve_chunk_text(
         self,
         query_embedding: List[float],

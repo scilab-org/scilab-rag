@@ -129,15 +129,12 @@ class PlanningAgent:
 
         # ── 2. RAG retrieval → initial_context ───────────────────────────
         if refined_queries:
+            seen: dict[str, None] = {}
             for query in refined_queries:
-                new_context = await self._retrieve_rag_context(
-                    query, ctx.paper_ids, dbg=dbg,
-                )
-                if new_context:
-                    if planning_state.initial_context:
-                        planning_state.initial_context += "\n\n" + new_context
-                    else:
-                        planning_state.initial_context = new_context
+                lines = await self._retrieve_rag_context(query, ctx.paper_ids, dbg=dbg)
+                for line in lines:
+                    seen[line] = None
+            planning_state.initial_context = "\n".join(seen.keys())
         else:
             if dbg:
                 dbg.log_step(_PHASE, "rag_skipped", "query refiner returned empty — no RAG needed")
@@ -221,15 +218,12 @@ class PlanningAgent:
 
         # ── 2. RAG retrieval → answer_context ────────────────────────────
         if refined_queries:
+            seen: dict[str, None] = {}
             for query in refined_queries:
-                new_context = await self._retrieve_rag_context(
-                    query, ctx.paper_ids, dbg=dbg,
-                )
-                if new_context:
-                    if planning_state.answer_context:
-                        planning_state.answer_context += "\n\n" + new_context
-                    else:
-                        planning_state.answer_context = new_context
+                lines = await self._retrieve_rag_context(query, ctx.paper_ids, dbg=dbg)
+                for line in lines:
+                    seen[line] = None
+            planning_state.answer_context = "\n".join(seen.keys())
         else:
             if dbg:
                 dbg.log_step(_PHASE, "rag_skipped", "query refiner returned empty — no RAG needed")
@@ -307,12 +301,12 @@ class PlanningAgent:
         query_text: str,
         paper_ids: list[str],
         dbg: Optional["WritePipelineDebugger"] = None,
-    ) -> str:
-        """Query Graph RAG for paper-scoped context relevant to the query."""
+    ) -> list[str]:
+        """Retrieve chunk-only context for the query. Returns deduplicated list of formatted lines."""
         if not self._graph_store or not self._embed_model or not paper_ids:
             if dbg:
                 dbg.log_step(_PHASE, "rag_skipped", "missing graph_store, embed_model, or paper_ids")
-            return ""
+            return []
 
         try:
             if dbg:
@@ -320,53 +314,40 @@ class PlanningAgent:
 
             query_embedding = await self._embed_model.aget_query_embedding(query_text)
 
-            context = self._graph_store.retrieve_scoped_context(
+            chunks = self._graph_store.retrieve_chunks(
                 query_embedding=query_embedding,
                 paper_ids=paper_ids,
-                top_k=self._similarity_top_k,
+                top_k=5,
             )
 
             if dbg:
-                dbg.log_step(_PHASE, "rag_raw_results", {
-                    "graph_count": len(context.get("graph", [])),
-                    "chunk_count": len(context.get("chunks", [])),
-                })
+                dbg.log_step(_PHASE, "rag_raw_results", {"chunk_count": len(chunks)})
 
-            # Format into readable text
             parts: list[str] = []
-            for record in context.get("graph", []):
-                src = record.get("source_name", "")
-                desc = record.get("source_description", "")
-                authors = record.get("source_authors", "")
-                pub_year = record.get("source_publication_month_year", "")
-                paper_name = record.get("source_paper_name", "")
-                if src and desc:
-                    attribution = _build_attribution(authors, pub_year, paper_name)
-                    prefix = f"[{attribution}] " if attribution else ""
-                    parts.append(f"- {prefix}{src}: {desc}")
-
-            for chunk in context.get("chunks", []):
+            for chunk in chunks:
                 text = chunk.get("text", "")
                 paper = chunk.get("paper_name", "")
                 authors = chunk.get("authors", "")
                 pub_year = chunk.get("publication_month_year", "")
+                cite_key = chunk.get("cite_key", "")
                 if text:
                     attribution = _build_attribution(authors, pub_year, paper)
-                    header = f"[{attribution}]" if attribution else f"[{paper}]" if paper else ""
-                    parts.append(f"{header} {text[:500]}" if header else text[:500])
+                    ck_suffix = f" @{cite_key}" if cite_key else ""
+                    header = f"[{attribution}{ck_suffix}]" if (attribution or cite_key) else f"[{paper}]" if paper else ""
+                    parts.append(f"{header} {text}" if header else text)
 
-            formatted = "\n".join(parts) if parts else ""
+            deduped = list(dict.fromkeys(parts))
 
             if dbg:
-                dbg.log_step(_PHASE, "rag_formatted_context", formatted)
+                dbg.log_step(_PHASE, "rag_formatted_context", "\n".join(deduped))
 
-            return formatted
+            return deduped
 
         except Exception as exc:
             logger.warning("RAG retrieval failed: %s", exc)
             if dbg:
                 dbg.log_step(_PHASE, "rag_error", str(exc))
-            return ""
+            return []
 
     # ── LLM: ask questions or signal readiness ───────────────────────────
 

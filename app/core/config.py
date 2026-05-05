@@ -60,10 +60,10 @@ class Settings(BaseSettings):
     # OpenRouter Models
     OPENROUTER_EMBED_MODEL: str = "nvidia/llama-nemotron-embed-vl-1b-v2:free"
     OPENROUTER_IMAGE_MODEL: str = "openai/gpt-4o-mini"
-    OPENROUTER_SUMMARY_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_SUMMARY_MODEL: str = "google/gemini-2.5-flash-lite"
     # OPENROUTER_CHAT_MODEL: str = "openai/gpt-4o"
-    OPENROUTER_CHAT_MODEL: str = "anthropic/claude-sonnet-4"
-    OPENROUTER_EXTRACT_MODEL: str = "openai/gpt-4o-mini"
+    OPENROUTER_CHAT_MODEL: str = "openai/gpt-oss-120b"
+    OPENROUTER_EXTRACT_MODEL: str = "google/gemini-2.5-flash-lite"
 
     # Image Model Configuration
     IMAGE_MODEL_MAX_TOKENS: int = 2024
@@ -71,14 +71,14 @@ class Settings(BaseSettings):
     IMAGE_MODEL_TEMPERATURE: float = 0.2
 
     # Summary Model Configuration
-    SUMMARY_MODEL_MAX_TOKENS: int = 4096
-    SUMMARY_MODEL_CONTEXT_WINDOW: int = 100000
+    SUMMARY_MODEL_MAX_TOKENS: int = 10000
+    SUMMARY_MODEL_CONTEXT_WINDOW: int = 128000
     SUMMARY_MODEL_TEMPERATURE: float = 0.1
 
     # Chat Model Configuration
-    CHAT_MODEL_MAX_TOKENS: int = 16000
+    CHAT_MODEL_MAX_TOKENS: int = 20000
     CHAT_MODEL_CONTEXT_WINDOW: int = 128000
-    CHAT_MODEL_TEMPERATURE: float = 0.3
+    CHAT_MODEL_TEMPERATURE: float = 0.2
 
     # Extract Model Configuration
     EXTRACT_MODEL_MAX_TOKENS: int = 8000  

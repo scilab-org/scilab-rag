@@ -15,6 +15,18 @@ from app.agents.tagger.prompts import CHUNK_SUMMARY_PROMPT, GLOBAL_SUMMARY_PROMP
 
 logger = logging.getLogger(__name__)
 
+_KEYWORDS_LABEL = re.compile(r'^\s*(keywords?|index\s+terms?)\s*$', re.IGNORECASE)
+_KEYWORDS_PATTERNS = [
+    # "Keywords: anything" at line start
+    re.compile(r'^\s*(keywords|index\s+terms)\s*:\s*(.+)$', re.IGNORECASE | re.MULTILINE),
+    # "Keywords foo, bar" at line start — commas required to avoid prose
+    re.compile(r'^\s*(keywords|index\s+terms)[ \t]+([^,\n]+(?:,[ \t]*[^,\n]+)+)$', re.IGNORECASE | re.MULTILINE),
+    # "... Public Health Keywords: term1, term2" mid-line — commas required
+    re.compile(r'\b(keywords|index\s+terms)\s*:\s*([^,\n]+(?:,[ \t]*[^,\n]+)+)', re.IGNORECASE | re.MULTILINE),
+    # "Keywords" alone on its own line, terms on next line(s) until blank line
+    re.compile(r'^\s*(keywords|index\s+terms)\s*$\n+((?:(?!\n\n).)+)', re.IGNORECASE | re.MULTILINE | re.DOTALL),
+]
+
 
 class AutoTagger(TransformComponent):
     llm: LLM
@@ -321,29 +333,29 @@ class AutoTagger(TransformComponent):
     @staticmethod
     def _extract_keywords_line(nodes: List[BaseNode]) -> Optional[str]:
         """
-        Extract the official Keywords/Index Terms line directly from raw text.
-        Matches either:
-          - "Keywords: ..." (colon form, any content after)
-          - "Keywords foo, bar, baz" (no colon, but must be comma-separated list)
-        Returns the line as-is, or None if not found.
+        Extract the official Keywords/Index Terms from nodes. Checks, in order:
+          1. Node heading metadata — most reliable for structured chunks
+          2. Text patterns — colon form, no-colon form, mid-line colon, standalone heading
         """
-        # Colon form: "Keywords: anything"
-        colon_pattern = re.compile(
-            r'^\s*(keywords|index\s+terms)\s*:\s*(.+)$',
-            re.IGNORECASE | re.MULTILINE,
-        )
-        # No-colon form: "Keywords foo, bar" — requires at least one comma to
-        # distinguish from prose sentences that start with "Keywords ..."
-        no_colon_pattern = re.compile(
-            r'^\s*(keywords|index\s+terms)[ \t]+([^,\n]+(?:,[ \t]*[^,\n]+)+)$',
-            re.IGNORECASE | re.MULTILINE,
-        )
         for node in nodes:
+            # Check heading metadata first (structured chunk: heading="Keywords", text=terms)
+            headings = node.metadata.get("headings", [])
+            if isinstance(headings, str):
+                headings = [headings]
+            if isinstance(headings, list):
+                for heading in headings:
+                    if _KEYWORDS_LABEL.match(str(heading)):
+                        text = node.get_content(metadata_mode=MetadataMode.NONE).strip()
+                        if text:
+                            return f"Keywords: {' '.join(text.splitlines())}"
+
+            # Fall back to text patterns
             text = node.get_content(metadata_mode=MetadataMode.NONE)
-            for pattern in (colon_pattern, no_colon_pattern):
+            for pattern in _KEYWORDS_PATTERNS:
                 match = pattern.search(text)
                 if match:
                     label = match.group(1).strip()
-                    terms = match.group(2).strip().rstrip('.')
+                    terms = ' '.join(match.group(2).split()).rstrip('.')
                     return f"{label.title()}: {terms}"
+
         return None

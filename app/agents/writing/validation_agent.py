@@ -1,26 +1,37 @@
 """
-Validation Agent — structural LaTeX validation and fixing.
+Validation Agent — 3-stage pipeline.
 
-Stripped down to ONLY handle structural LaTeX issues:
-  1. Programmatic checks (syntax via pylatexenc, ref/label integrity)
-  2. LLM fixer ONLY if programmatic checks find issues — fixes structure only
+  Stage 1: Grammar & diction check (LLM)
+  Stage 2: Semantic check — checklist rules + journal style (LLM)
+  Stage 3: Citation check
+    3a. Programmatic — invalid \cite{} keys + raw @article blocks in body
+    3b. Fact-check — per-claim retrieval (LLM, full sentence preserved)
 
-Does NOT check or modify:
-  - Citations (no _check_citations — was causing blind add/remove)
-  - Content quality or factual accuracy
-  - Style or ruleset compliance (handled by RulesetValidator separately)
+All stages emit a unified ValidationIssue dict. Output is a well-formatted
+markdown summary (persisted as message.content) plus the flat issues list
+(persisted in metadata for Fix-All).
 """
 
+import asyncio
 import json
 import logging
-from typing import TYPE_CHECKING, Optional
+import re
+import uuid
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from llama_index.core.llms import ChatMessage, LLM
 
 from app.agents.writing.models import WritingContext
-from app.agents.writing.prompts import LATEX_VALIDATION_PROMPT, VALIDATION_SYSTEM_PROMPT
+from app.agents.writing.prompts import (
+    CHECKLIST_VALIDATION_PROMPT,
+    CITATION_FACT_CHECK_PROMPT,
+    GRAMMAR_VALIDATION_PROMPT,
+    LATEX_VALIDATION_PROMPT,
+    VALIDATION_SYSTEM_PROMPT,
+)
 from app.services.latex_validator import (
     check_ref_integrity,
+    extract_citations,
     validate_latex_syntax,
 )
 
@@ -29,97 +40,489 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_PHASE = "validation"
+# ── Sentence truncation ──────────────────────────────────────────────────
+
+_SENTENCE_MAX = 120
+
+
+def _truncate(s: str, max_len: int = _SENTENCE_MAX) -> str:
+    """Mid-truncate a string to max_len characters."""
+    if not s or len(s) <= max_len:
+        return s
+    half = (max_len - 3) // 2
+    return s[:half] + "..." + s[-(max_len - half - 3):]
+
+
+def _cap(s: str, max_len: int = 200) -> str:
+    """Hard-cap a string (tail truncate) — safety net for LLM-generated detail."""
+    if not s or len(s) <= max_len:
+        return s
+    return s[:max_len - 1] + "…"
+
+
+# ── Issue builder ────────────────────────────────────────────────────────
+
+def _make_issue(
+    stage: str,
+    severity: str,
+    rule: str,
+    sentence: str,
+    detail: str,
+    cite_key: Optional[str] = None,
+    preserve_sentence: bool = False,
+) -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "stage": stage,
+        "severity": severity,
+        "rule": rule,
+        "sentence": sentence if preserve_sentence else _truncate(sentence),
+        "detail": _cap(detail),
+        **({"citeKey": cite_key} if cite_key else {}),
+    }
+
+
+# ── Strip JSON fences ────────────────────────────────────────────────────
+
+def _strip_json(text: str) -> str:
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else ""
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
 
 
 class ValidationAgent:
     """
-    Validates and auto-fixes structural LaTeX issues only.
-
-    Combines programmatic checks (fast, deterministic) with an LLM fixer
-    that is invoked ONLY when programmatic checks find issues.
-
-    Does NOT touch content, citations, or style.
+    Combines grammar checking, checklist/journal-style compliance,
+    programmatic citation key + @article-block detection, and
+    citation fact-checking.
     """
 
-    def __init__(self, llm: LLM) -> None:
+    def __init__(
+        self,
+        llm: LLM,
+        fact_check_llm: Optional[LLM] = None,
+        graph_store: Optional[Any] = None,
+        embed_model: Optional[Any] = None,
+    ) -> None:
         self._llm = llm
+        self._fact_check_llm = fact_check_llm or llm
+        self._graph_store = graph_store
+        self._embed_model = embed_model
 
-    async def validate(
+    # ════════════════════════════════════════════════════════════════════
+    # PUBLIC: user-triggered full validation
+    # ════════════════════════════════════════════════════════════════════
+
+    async def validate_content(self, ctx: WritingContext) -> dict:
+        """
+        Run all 3 validation stages and return:
+        {
+            "markdown_summary": str,   # persisted as message.content
+            "issues": list[dict],      # flat unified list for metadata
+            "has_issues": bool,
+        }
+        """
+        if not ctx.current_section:
+            return {
+                "markdown_summary": "## Validation Results\n\n✓ No content to validate.",
+                "issues": [],
+                "has_issues": False,
+            }
+
+        content = ctx.current_section
+        all_issues: List[dict] = []
+
+        # ── Stage 1: Grammar ─────────────────────────────────────────────
+        try:
+            grammar_issues = await self._validate_grammar(content)
+            all_issues.extend(grammar_issues)
+        except Exception:
+            logger.exception("Grammar check failed, skipping")
+
+        # ── Stage 2: Checklist + journal style ───────────────────────────
+        if ctx.checklist_items:
+            try:
+                semantic_issues = await self._validate_checklist(
+                    content, ctx.checklist_items, ctx.journal_style or ""
+                )
+                all_issues.extend(semantic_issues)
+            except Exception:
+                logger.exception("Checklist check failed, skipping")
+
+        # ── Stage 3a: Programmatic citation checks ───────────────────────
+        programmatic = self._check_citation_keys(content, ctx.cite_key_map)
+        programmatic += self._check_article_blocks(content)
+        all_issues.extend(programmatic)
+
+        # ── Stage 3b: Citation fact-check (LLM + retrieval) ─────────────
+        if self._graph_store and self._embed_model and ctx.paper_ids:
+            try:
+                fact_issues = await self._validate_citation_facts(content, ctx)
+                all_issues.extend(fact_issues)
+            except Exception:
+                logger.exception("Citation fact-check failed, skipping")
+
+        has_issues = bool(all_issues)
+        markdown_summary = self._format_summary(all_issues)
+
+        return {
+            "markdown_summary": markdown_summary,
+            "issues": all_issues,
+            "has_issues": has_issues,
+        }
+
+    # ════════════════════════════════════════════════════════════════════
+    # STAGE 1: Grammar
+    # ════════════════════════════════════════════════════════════════════
+
+    async def _validate_grammar(self, content: str) -> List[dict]:
+        prompt = GRAMMAR_VALIDATION_PROMPT.format(content=content)
+        messages = [ChatMessage(role="user", content=prompt)]
+
+        response = await self._fact_check_llm.achat(messages)
+        raw = _strip_json((response.message.content or "").strip())
+
+        try:
+            result = json.loads(raw)
+            issues = []
+            for item in result.get("issues", []):
+                issues.append(_make_issue(
+                    stage="grammar",
+                    severity="warning",
+                    rule=item.get("rule", "Grammar"),
+                    sentence=item.get("sentence", ""),
+                    detail=item.get("detail", ""),
+                ))
+            return issues
+        except json.JSONDecodeError:
+            logger.warning("Grammar validation returned invalid JSON: %s", raw[:200])
+            return []
+
+    # ════════════════════════════════════════════════════════════════════
+    # STAGE 2: Checklist + journal style
+    # ════════════════════════════════════════════════════════════════════
+
+    async def _validate_checklist(
+        self,
+        content: str,
+        checklist_items: List[dict],
+        journal_style: str,
+    ) -> List[dict]:
+        # Format checklist items as a numbered list for the prompt
+        items_text = "\n".join(
+            f"{i + 1}. [{item.get('id', '')}] **{item.get('name', '')}** "
+            f"(weight: {item.get('weight', 1)}): {item.get('rule', '')}"
+            for i, item in enumerate(checklist_items)
+        )
+
+        prompt = CHECKLIST_VALIDATION_PROMPT.format(
+            journal_style=journal_style or "Not specified",
+            checklist_items=items_text,
+            content=content,
+        )
+        messages = [ChatMessage(role="user", content=prompt)]
+
+        response = await self._fact_check_llm.achat(messages)
+        raw = _strip_json((response.message.content or "").strip())
+
+        try:
+            result = json.loads(raw)
+            issues = []
+            # LLM returns ALL items; filter FAILs here in Python
+            for item in result.get("results", []):
+                if item.get("status", "PASS") != "FAIL":
+                    continue
+                sentence = item.get("sentence", "")
+                detail = item.get("detail", "")
+                # Skip empty FAIL entries — LLM returned FAIL with no evidence
+                if not sentence and not detail:
+                    continue
+                issues.append(_make_issue(
+                    stage="semantic",
+                    severity="error",
+                    rule=item.get("rule", "Checklist rule"),
+                    sentence=sentence,
+                    detail=detail,
+                ))
+            return issues
+        except json.JSONDecodeError:
+            logger.warning("Checklist validation returned invalid JSON: %s", raw[:200])
+            return []
+
+    # ════════════════════════════════════════════════════════════════════
+    # STAGE 3a: Programmatic citation checks
+    # ════════════════════════════════════════════════════════════════════
+
+    def _check_citation_keys(
+        self, content: str, cite_key_map: Dict[str, str]
+    ) -> List[dict]:
+        """Flag \cite{key} commands whose key is not in the library."""
+        issues = []
+        # Build reverse map: cite_key → paper_id
+        known_keys = set(cite_key_map.values())
+        used_keys = extract_citations(content)
+
+        for key in used_keys:
+            if key not in known_keys:
+                # Find the sentence containing this citation
+                sentence = self._find_sentence(content, rf"\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{{[^}}]*\b{re.escape(key)}\b[^}}]*\}}")
+                issues.append(_make_issue(
+                    stage="citation",
+                    severity="error",
+                    rule="Invalid Citation Key",
+                    sentence=sentence or rf"\cite{{{key}}}",
+                    detail=f"Citation key '{key}' does not exist in the reference library.",
+                    cite_key=key,
+                ))
+        return issues
+
+    def _check_article_blocks(self, content: str) -> List[dict]:
+        """
+        Flag raw BibTeX @article/@inproceedings/etc. blocks embedded
+        directly in the LaTeX section body — these are major errors.
+        """
+        issues = []
+        # Match @type{ or @type ( entry blocks
+        pattern = re.compile(
+            r'(@(?:article|inproceedings|book|misc|techreport|phdthesis|mastersthesis|'
+            r'incollection|conference|proceedings)\s*\{[^}]{0,120})',
+            re.IGNORECASE,
+        )
+        for match in pattern.finditer(content):
+            snippet = match.group(1).strip()
+            issues.append(_make_issue(
+                stage="citation",
+                severity="error",
+                rule="Embedded @article Block",
+                sentence=snippet,
+                detail=(
+                    "Raw BibTeX entry found in section body. "
+                    "Remove this entire block from the section content completely."
+                ),
+            ))
+        return issues
+
+    # ════════════════════════════════════════════════════════════════════
+    # STAGE 3b: Citation fact-check (LLM + retrieval)
+    # ════════════════════════════════════════════════════════════════════
+
+    async def _validate_citation_facts(
+        self, content: str, ctx: WritingContext
+    ) -> List[dict]:
+        inverse_map: Dict[str, str] = {v: k for k, v in ctx.cite_key_map.items()}
+        cite_keys = extract_citations(content)
+        claims = self._extract_claim_sentences(content, cite_keys)
+
+        staged = []
+        for cite_key, sentence in claims:
+            paper_id = inverse_map.get(cite_key)
+            if not paper_id:
+                continue
+            embedding = self._embed_model.get_text_embedding(sentence)
+            chunks = self._graph_store.retrieve_chunks(embedding, [paper_id], top_k=3)
+            chunks_text = "\n---\n".join(
+                c["text"] for c in chunks if c.get("text")
+            )
+            if chunks_text:
+                staged.append((cite_key, sentence, chunks_text))
+
+        if not staged:
+            return []
+
+        results = await asyncio.gather(
+            *[self._check_one_citation(ck, s, ct) for ck, s, ct in staged],
+            return_exceptions=True,
+        )
+
+        issues = []
+        for r in results:
+            if isinstance(r, Exception):
+                logger.warning("Citation fact-check error: %s", r)
+            elif isinstance(r, dict):
+                issues.append(r)
+        return issues
+
+    async def _check_one_citation(
+        self, cite_key: str, sentence: str, chunks_text: str
+    ) -> Optional[dict]:
+        prompt = CITATION_FACT_CHECK_PROMPT.format(
+            cite_key=cite_key,
+            claim=sentence,
+            retrieved_context=chunks_text,
+        )
+        messages = [ChatMessage(role="user", content=prompt)]
+
+        try:
+            response = await self._fact_check_llm.achat(messages)
+            raw = _strip_json((response.message.content or "").strip())
+            result = json.loads(raw)
+
+            if result.get("supported", True):
+                return None
+
+            return _make_issue(
+                stage="citation",
+                severity="warning",
+                rule="Fact Check",
+                sentence=sentence,   # full sentence — not truncated
+                detail=result.get("issue", "Claim not supported by cited paper."),
+                cite_key=cite_key,
+                preserve_sentence=True,
+            )
+        except Exception:
+            logger.warning("Citation fact-check LLM error for [%s], skipping", cite_key)
+            return None
+
+    # ════════════════════════════════════════════════════════════════════
+    # LaTeX structural validation (write-mode only, unchanged)
+    # ════════════════════════════════════════════════════════════════════
+
+    async def validate_latex(
         self,
         content: str,
         ctx: WritingContext,
         dbg: Optional["WritePipelineDebugger"] = None,
     ) -> dict:
-        """
-        Run structural LaTeX validation.
-
-        Returns:
-            {
-                "content": str,           # final (possibly fixed) LaTeX
-                "validation_summary": {
-                    "issues_found": int,
-                    "issues_fixed": int,
-                }
-            }
-        """
+        _phase = "validation"
         if dbg:
-            dbg.log_step(_PHASE, "scope", "structural_only")
+            dbg.log_step(_phase, "scope", "structural_only")
 
-        # ── Programmatic checks ──────────────────────────────────────────
         programmatic_issues = self._run_programmatic_checks(content)
 
         if dbg:
-            dbg.log_step(_PHASE, "programmatic_issues", programmatic_issues)
+            dbg.log_step(_phase, "programmatic_issues", programmatic_issues)
 
         issues_found = len(programmatic_issues)
 
         if not programmatic_issues:
-            # No structural issues — pass through unchanged
-            logger.info("LaTeX validation passed — no structural issues found")
             if dbg:
-                dbg.log_step(_PHASE, "result", "passed_no_issues")
-
+                dbg.log_step(_phase, "result", "passed_no_issues")
             return {
                 "content": content,
-                "validation_summary": {
-                    "issues_found": 0,
-                    "issues_fixed": 0,
-                },
+                "validation_summary": {"issues_found": 0, "issues_fixed": 0},
             }
 
-        # ── LLM structural fix (only invoked when issues exist) ──────────
-        logger.info("LaTeX validation found %d structural issues, invoking LLM fixer", issues_found)
-
         fixed_content = await self._fix_structural_issues(
-            content, programmatic_issues, dbg=dbg,
+            content, programmatic_issues, dbg=dbg
         )
-
         issues_fixed = issues_found if fixed_content != content else 0
+        summary = {"issues_found": issues_found, "issues_fixed": issues_fixed}
 
         if dbg:
-            dbg.log_step(_PHASE, "content_changed", fixed_content != content)
+            dbg.log_step(_phase, "summary", summary)
 
-        summary = {
-            "issues_found": issues_found,
-            "issues_fixed": issues_fixed,
+        return {"content": fixed_content, "validation_summary": summary}
+
+    # ════════════════════════════════════════════════════════════════════
+    # Markdown summary formatter
+    # ════════════════════════════════════════════════════════════════════
+
+    def _format_summary(self, issues: List[dict]) -> str:
+        if not issues:
+            return (
+                "## Validation Results\n\n"
+                "✓ No grammar errors found.\n"
+                "✓ All checklist rules passed.\n"
+                "✓ All citations are valid."
+            )
+
+        # Group by stage
+        by_stage: Dict[str, List[dict]] = {"grammar": [], "semantic": [], "citation": []}
+        for issue in issues:
+            by_stage.setdefault(issue["stage"], []).append(issue)
+
+        stage_labels = {
+            "grammar": "Grammar",
+            "semantic": "Journal Style & Checklist",
+            "citation": "Citations",
         }
+        severity_icon = {"error": "✕", "warning": "⚠"}
 
-        if dbg:
-            dbg.log_step(_PHASE, "summary", summary)
+        lines = ["## Validation Results", ""]
 
-        return {
-            "content": fixed_content,
-            "validation_summary": summary,
-        }
+        for stage_key, label in stage_labels.items():
+            stage_issues = by_stage.get(stage_key, [])
+            if not stage_issues:
+                continue
 
-    # ── Programmatic checks ──────────────────────────────────────────────
+            error_count = sum(1 for i in stage_issues if i["severity"] == "error")
+            warn_count = sum(1 for i in stage_issues if i["severity"] == "warning")
+            counts = []
+            if error_count:
+                counts.append(f"{error_count} error{'s' if error_count > 1 else ''}")
+            if warn_count:
+                counts.append(f"{warn_count} warning{'s' if warn_count > 1 else ''}")
+            count_str = " · ".join(counts)
+
+            lines.append(f"### {label}  ·  {count_str}")
+            lines.append("")
+
+            for issue in stage_issues:
+                icon = severity_icon.get(issue["severity"], "⚠")
+                rule = issue["rule"]
+                sentence = issue.get("sentence", "")
+                detail = issue.get("detail", "")
+                cite_key = issue.get("citeKey", "")
+
+                # Build the issue line
+                if cite_key and stage_key == "citation":
+                    lines.append(f"- {icon} **[{rule}]** `{sentence}`")
+                elif sentence:
+                    lines.append(f"- {icon} **[{rule}]** `{sentence}`")
+                else:
+                    lines.append(f"- {icon} **[{rule}]**")
+
+                if detail:
+                    lines.append(f"  > {detail}")
+                lines.append("")
+
+        total = len(issues)
+        lines.append(f"---")
+        lines.append(f"{total} issue{'s' if total != 1 else ''} found.")
+
+        return "\n".join(lines)
+
+    # ════════════════════════════════════════════════════════════════════
+    # Helpers
+    # ════════════════════════════════════════════════════════════════════
+
+    def _find_sentence(self, content: str, pattern: str) -> Optional[str]:
+        """Return the full sentence containing the first regex match."""
+        sentence_re = re.compile(r'(?<=[.!?])\s+')
+        sentences = sentence_re.split(content)
+        key_re = re.compile(pattern)
+        for sentence in sentences:
+            if key_re.search(sentence):
+                return sentence.strip()
+        return None
+
+    def _extract_claim_sentences(
+        self, content: str, cite_keys: List[str]
+    ) -> List[tuple]:
+        sentence_pattern = re.compile(r'(?<=[.!?])\s+')
+        sentences = sentence_pattern.split(content)
+        seen: set = set()
+        result = []
+        for cite_key in cite_keys:
+            if cite_key in seen:
+                continue
+            key_pattern = re.compile(
+                r'\\[A-Za-z]*cite[A-Za-z]*\*?(?:\[[^\]]*\])*\{[^}]*\b'
+                + re.escape(cite_key)
+                + r'\b[^}]*\}'
+            )
+            for sentence in sentences:
+                if key_pattern.search(sentence):
+                    result.append((cite_key, sentence.strip()))
+                    seen.add(cite_key)
+                    break
+        return result
 
     def _run_programmatic_checks(self, content: str) -> list[dict]:
-        """Run fast, deterministic structural LaTeX checks."""
         issues: list[dict] = []
-
-        # Syntax checks (braces, environments, commands)
         syntax_result = validate_latex_syntax(content)
         for issue in syntax_result.issues:
             issues.append({
@@ -127,8 +530,6 @@ class ValidationAgent:
                 "description": issue.description,
                 "severity": issue.severity,
             })
-
-        # Ref/label integrity
         ref_issues = check_ref_integrity(content)
         for issue in ref_issues:
             issues.append({
@@ -136,10 +537,7 @@ class ValidationAgent:
                 "description": issue.description,
                 "severity": issue.severity,
             })
-
         return issues
-
-    # ── LLM structural fixer ─────────────────────────────────────────────
 
     async def _fix_structural_issues(
         self,
@@ -147,65 +545,34 @@ class ValidationAgent:
         programmatic_issues: list[dict],
         dbg: Optional["WritePipelineDebugger"] = None,
     ) -> str:
-        """Call the LLM to fix structural LaTeX issues only."""
-
+        _phase = "validation"
         issues_text = "\n".join(
             f"- [{i['severity']}] {i['description']}" for i in programmatic_issues
         )
-
         user_prompt = LATEX_VALIDATION_PROMPT.format(
             content=content,
             programmatic_issues=issues_text,
         )
-
         if dbg:
-            dbg.log_step(_PHASE, "llm_fix_prompt", user_prompt)
+            dbg.log_step(_phase, "llm_fix_prompt", user_prompt)
 
         messages = [
             ChatMessage(role="system", content=VALIDATION_SYSTEM_PROMPT),
             ChatMessage(role="user", content=user_prompt),
         ]
-
-        async with (dbg.llm_timer("validation", "fix_structural") if dbg else _noop_ctx()) as _t:
+        async with (
+            dbg.llm_timer("validation", "fix_structural") if dbg else _noop_ctx()
+        ):
             response = await self._llm.achat(messages)
-        raw = _strip_json_fences((response.message.content or "").strip())
+        fixed = (response.message.content or "").strip()
 
         if dbg:
-            dbg.log_step(_PHASE, "llm_fix_raw_response", raw)
+            dbg.log_step(_phase, "llm_fix_response", fixed)
 
-        try:
-            result = json.loads(raw)
-            fixed = result.get("fixed_content", content)
-            if dbg:
-                dbg.log_step(_PHASE, "llm_fix_parse", {
-                    "success": True,
-                    "has_issues": result.get("has_issues", False),
-                    "issue_count": len(result.get("issues", [])),
-                })
-            return fixed
-        except json.JSONDecodeError:
-            logger.warning("Validation LLM returned invalid JSON, keeping original: %s", raw[:200])
-            if dbg:
-                dbg.log_step(_PHASE, "llm_fix_parse", {
-                    "success": False,
-                    "error": "JSONDecodeError",
-                })
-            return content
-
-
-def _strip_json_fences(text: str) -> str:
-    """Remove ```json ... ``` wrappers."""
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n", 1)
-        text = lines[1] if len(lines) > 1 else ""
-    if text.endswith("```"):
-        text = text[:-3]
-    return text.strip()
+        return fixed if fixed else content
 
 
 class _NoopCtx:
-    """Async context manager that does nothing (used when dbg is None)."""
     async def __aenter__(self):
         return self
     async def __aexit__(self, *_exc):

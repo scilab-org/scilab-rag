@@ -163,7 +163,7 @@ def _patch_docling_api_image_request():
 # Apply the patch at module load time
 _patch_docling_api_image_request()
 
-def run_hybrid(doc, max_tokens: int = 6000):
+def run_hybrid(doc, max_tokens: int = 2000):
     import tiktoken
     from docling_core.transforms.chunker.hybrid_chunker import HybridChunker
     from docling_core.transforms.chunker.tokenizer.openai import OpenAITokenizer

@@ -139,12 +139,11 @@ def get_writing_agent():
 
 @lru_cache
 def get_validation_agent():
-    """Get cached ValidationAgent (structural LaTeX checks + LLM fixer)."""
+    """Get cached ValidationAgent (ruleset compliance + structural LaTeX checks)."""
     from app.agents.writing.validation_agent import ValidationAgent
-    return ValidationAgent(llm=get_chat_llm())
-
-@lru_cache
-def get_ruleset_validator():
-    """Get cached RulesetValidator (checks output against user-provided style rules)."""
-    from app.agents.writing.ruleset_validator import RulesetValidator
-    return RulesetValidator(llm=get_chat_llm())
+    return ValidationAgent(
+        llm=get_chat_llm(),
+        fact_check_llm=get_summary_llm(),
+        graph_store=get_graph_store(),
+        embed_model=get_embed_llm(),
+    )

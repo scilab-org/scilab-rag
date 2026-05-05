@@ -80,7 +80,7 @@ def normalize_rel_label(label: str) -> str:
 
 async def generate_chat_title(llm: LLM, message: str) -> str:
     prompt = (
-        "Generate a concise scientific chat session title for the following message.\n\n"
+        "Generate a concise scientific chat session title for the following message. Plain text only, no markdown or special formatting. Max 7 - 10 words.\n\n"
         f"Message: \"{message.strip()}\"\n\nTitle:"
     )
     response = await llm.achat([ChatMessage(role="user", content=prompt)])

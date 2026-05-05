@@ -37,7 +37,7 @@ class ChatRequest(CamelCaseModel):
     session_id: Optional[uuid.UUID] = None
     project_id: Optional[str] = None
     paper_ids: list[str] = Field(default_factory=list, description="Paper IDs to scope the query. Empty list queries without paper filtering.")
-    mode: str = Field(default="chat", pattern=r"^(chat|write)$", description="'chat' for Q&A, 'write' for paper writing.")
+    mode: str = Field(default="chat", pattern=r"^(chat|write|validate)$", description="'chat' for Q&A, 'write' for paper writing, 'validate' for section validation.")
     section_id: Optional[str] = Field(default=None, description="UUID from .NET backend — scopes session to a section (both chat and write modes).")
     section_target: Optional[str] = Field(default=None, description="Target section type, e.g. 'methodology', 'results' (both chat and write modes).")
     writing: Optional["WritingPayload"] = Field(default=None, description="Required when mode='write'.")
@@ -49,12 +49,23 @@ class ReferencedSection(CamelCaseModel):
     content: str = Field(..., min_length=1, description="LaTeX content of the section")
 
 
+class ChecklistItemPayload(CamelCaseModel):
+    """A single checklist rule item from GET /check-lists."""
+    id: str = Field(..., description="Checklist item UUID")
+    name: str = Field(..., description="Short rule name")
+    rule: str = Field(..., description="Full rule text")
+    weight: int = Field(default=1, description="Importance weight (higher = more critical)")
+
+
 class WritingPayload(CamelCaseModel):
     """Payload sent alongside a write-mode request."""
     current_section: Optional[str] = Field(default=None, description="LaTeX content of the section being worked on (can be non-null even for write_new).")
     referenced_sections: Optional[list[ReferencedSection]] = Field(default=None, description="Other sections user attached for cross-reference.")
-    ruleset: Optional[str] = Field(default=None, description="Style/formatting rules as markdown")
+    ruleset: Optional[str] = Field(default=None, description="Style/formatting rules as markdown (write mode)")
     section_context: Optional[str] = Field(default=None, description="Pre-computed project/paper/section context for planning")
+    # Validate-mode specific fields
+    checklist_items: Optional[list[ChecklistItemPayload]] = Field(default=None, description="Checklist rules from GET /check-lists, filtered by section")
+    journal_style: Optional[str] = Field(default=None, description="Journal/conference formatting style string, e.g. 'IEEE'")
 
 class FormatPaperStyleRequest(CamelCaseModel):
     """Request to reformat a paper's LaTeX content to match a conference/journal template style."""

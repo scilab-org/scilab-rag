@@ -122,3 +122,9 @@ class WritingContext:
 
     # Last N written outputs from DB messages — passed to build_instructions only
     conversation_history: List[str] = field(default_factory=list)
+
+    # Validation-specific inputs (validate mode only)
+    # List of checklist items: [{id, name, rule, weight}, ...]
+    checklist_items: List[Dict] = field(default_factory=list)
+    # Journal/conference formatting style string, e.g. "IEEE"
+    journal_style: Optional[str] = None

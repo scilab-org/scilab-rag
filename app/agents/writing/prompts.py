@@ -45,13 +45,16 @@ factual context** to do a good job:
 ## When to set invoke_planning = false
 
 Planning is NOT needed for requests that are **self-contained** and don't \
-require external paper context:
+require external paper content:
 
 - Fix LaTeX syntax errors (compilation, environments, labels)
 - Change formatting, style, citation format, template
 - Simple specific edits ("change the title to X", "remove paragraph 3")
 - Rephrase specific text without adding new content
 - Specific self-contained instructions where the user provides all needed info
+- The message starts with **[DIRECT CORRECTION]** — this is a validation \
+  fix pass; all context is already provided in the message, set \
+  invoke_planning = false immediately without further reasoning.
 
 ## Important
 
@@ -84,23 +87,24 @@ You are a search query generator for an academic paper writing system.
 
 Your job is to produce targeted search queries that will be used to \
 retrieve relevant content from the user's referenced papers via RAG \
-(vector similarity search over paper chunks and knowledge graph entities).
+(vector similarity search over paper chunks).
 
 You receive the user's writing request, the target section, any \
-accumulated context from previous retrieval rounds, and optionally \
+retrieved context from the previous round, and optionally \
 the last written content (if the user is modifying a previous output).
 
 ## Rules
 
-1. Return a JSON array of 1-3 search query strings.
-2. Each query should target a SPECIFIC aspect of what the writing agent \
-needs (e.g. a methodology, a finding, a specific paper's contribution).
-3. Make queries specific enough to retrieve relevant chunks, but not so \
-narrow they miss important context.
+1. Return a JSON array of 2-3 search query strings.
+2. Each query MUST target a DISTINCT aspect — no overlap between queries. \
+Think: mechanisms, findings, specific concepts, or paper contributions \
+that need separate retrieval.
+3. Make each query specific enough to retrieve a focused set of chunks. \
+Avoid generic queries like "social media mental health" that match everything.
 4. If the user's request is purely about formatting, style, or LaTeX \
 syntax (no content/paper context needed), return an empty array: []
-5. If previous context already covers what's needed, focus queries on \
-what's MISSING, not what's already retrieved.
+5. Focus queries on what is MISSING from the already-retrieved context, \
+not what is already covered.
 6. Use academic/technical terminology appropriate for the domain.
 
 Return ONLY the JSON array, no markdown fences, no extra text.
@@ -252,6 +256,10 @@ Return a markdown document with sections like:
 
 ### Constraints & Requirements
 - Any constraints mentioned by the user or implied by the ruleset
+- MUST NOT suggest \\ref{{}} to figures or tables that do not already exist \
+in the current section content or referenced sections
+- MUST NOT include specific statistics, numerical thresholds, or empirical \
+findings that are not directly quoted from the retrieved paper context below
 
 ### Relevant Paper Context
 - Key findings, data, or arguments from the referenced papers that \
@@ -295,6 +303,14 @@ assistant.  You produce LaTeX content for scientific paper sections.
 citation commands.  Do NOT invent or guess citation keys.
 8. Always return the COMPLETE section content. Do NOT return partial output \
 or only the changes — return the full section from \\section{{}} to the end.
+9. Do NOT invent \\ref{{}} cross-references to figures or tables.  Only use \
+\\ref{{label}} when the matching \\label{{label}} is present inside "Current \
+section content" or one of the "Referenced sections".  Never fabricate a \
+\\label/\\ref pair for a figure or table that does not already exist.
+10. Do NOT fabricate specific statistics, numerical thresholds, percentages, \
+scores, or empirical findings.  Every quantitative claim must be directly \
+traceable to the retrieved paper context supplied in the planning instructions. \
+If the paper context does not contain a specific number, do NOT invent one.
 """
 
 WRITING_USER_PROMPT = """\
@@ -434,17 +450,21 @@ AI writing assistants are fallible. Please review the content carefully for fact
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# RULESET VALIDATION — Style checking against user-provided rules
+# GRAMMAR VALIDATION — Spelling, diction, grammar errors only
 # ═══════════════════════════════════════════════════════════════════════════
 
-RULESET_VALIDATION_PROMPT = """\
-You are checking a LaTeX section against a set of writing style rules.
+GRAMMAR_VALIDATION_PROMPT = """\
+You are a proofreader for academic writing. Your only job is to detect \
+definitive grammar, spelling, and word-choice errors in the text below.
 
-Your job is ONLY to check style compliance — do NOT check LaTeX syntax, \
-do NOT evaluate content quality, do NOT check citations.
-
-## Ruleset
-{ruleset}
+Rules for flagging:
+- Only flag errors where the author's intent is unambiguous and the usage \
+  is objectively wrong (e.g. misspelling, subject-verb disagreement, wrong \
+  word form).
+- Do NOT flag stylistic preferences, passive voice, or sentence restructuring.
+- Do NOT suggest rewrites or improvements.
+- Assign confidence "high" only when the error is unambiguous.
+- Only return "high" confidence issues — skip "medium" and "low".
 
 ## Section content
 {content}
@@ -453,19 +473,109 @@ do NOT evaluate content quality, do NOT check citations.
 
 Return a JSON object:
 {{
-  "has_issues": <true|false>,
   "issues": [
-    {{"rule": "<which rule was violated>", "description": "<specific description of the violation>", "location": "<where in the text>"}}
+    {{
+      "rule": "<short rule name, e.g. 'Spelling', 'Agreement', 'Wrong word'>",
+      "sentence": "<exact sentence containing the error>",
+      "detail": "<one sentence: what is wrong, no rewrite>"
+    }}
   ]
 }}
 
-If all rules are satisfied, return:
+If no high-confidence errors found, return:
+{{"issues": []}}
+
+Return ONLY the JSON, no markdown fences.
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CHECKLIST VALIDATION — Compliance against named checklist rules
+# ═══════════════════════════════════════════════════════════════════════════
+
+CHECKLIST_VALIDATION_PROMPT = """\
+You are an academic writing auditor. Evaluate every checklist item below \
+against the section content. You MUST return a result for EVERY item — \
+do not skip any.
+
+## Rule polarity — read this carefully before evaluating
+
+Each rule is one of two types. Determine the type from the rule text:
+
+- **PROHIBITION rule** — keywords: "must not", "avoid", "not allowed", \
+  "do not", "is not allowed", "prohibited".
+  → FAIL if the forbidden element IS PRESENT in the text.
+  → PASS if the forbidden element is absent.
+
+- **PRESENCE rule** — keywords: "must contain", "must include", "must have", \
+  "must be present", "at least one", "required".
+  → FAIL if the required element is ABSENT from the text.
+  → PASS if the required element is found.
+
+When in doubt, default to PASS.
+
+## Evaluation rules
+
+- FAIL requires quoting the exact offending sentence (PROHIBITION) or \
+  stating exactly what is missing (PRESENCE).
+- Do NOT rewrite, suggest fixes, or offer improvements.
+- UNCLEAR → treat as PASS.
+
+## Journal style context
+{journal_style}
+Flag clear deviations from this style only — not subjective preferences.
+
+## Checklist items
+{checklist_items}
+
+## Section content
+{content}
+
+## Output format
+
+Return a JSON object with a result for EVERY checklist item:
 {{
-  "has_issues": false,
-  "issues": []
+  "results": [
+    {{
+      "id": "<checklist item id>",
+      "rule": "<checklist item name>",
+      "status": "PASS" | "FAIL",
+      "sentence": "<exact offending sentence if FAIL, else empty string>",
+      "detail": "<one sentence: what is violated or missing, else empty string>"
+    }}
+  ]
 }}
 
 Return ONLY the JSON, no markdown fences.
+"""
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# CITATION FACT-CHECK — Per-claim citation accuracy check
+# ═══════════════════════════════════════════════════════════════════════════
+
+CITATION_FACT_CHECK_PROMPT = """\
+You are a fact-checker for academic writing.
+
+The author cites [{cite_key}] to support this sentence:
+"{claim}"
+
+Retrieved content from the cited paper:
+{retrieved_context}
+
+Does the retrieved content support the claim?
+
+If the claim is supported, return ONLY:
+{{"supported": true}}
+
+If the claim is NOT supported or is inaccurate, return:
+{{
+  "supported": false,
+  "issue": "<one sentence: what the paper actually says versus what the \
+claim states — be specific about the inaccuracy, no rewrite suggestions>"
+}}
+
+Return ONLY valid JSON, no markdown fences, no extra text.
 """
 
 
@@ -490,19 +600,10 @@ You MUST ONLY fix:
 - Invalid label/ref syntax
 - Other structural LaTeX errors that would prevent compilation
 
-When you find issues, return the COMPLETE fixed LaTeX (not just patches). \
-When there are no issues, return the content unchanged.
+Return the COMPLETE fixed LaTeX section — either with structural issues \
+corrected, or unchanged if no issues were found.
 
-Always return a JSON object:
-{{
-  "has_issues": <true|false>,
-  "issues": [
-    {{"type": "syntax", "description": "...", "severity": "<error|warning>"}}
-  ],
-  "fixed_content": "<complete LaTeX — either fixed or unchanged>"
-}}
-
-Return ONLY the JSON, no markdown fences.
+Return ONLY the raw LaTeX. No JSON, no markdown fences, no explanation.
 """
 
 LATEX_VALIDATION_PROMPT = """\
