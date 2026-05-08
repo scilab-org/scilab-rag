@@ -23,7 +23,7 @@ _token_url = f"{_keycloak_base}/token"
 oauth2_scheme = OAuth2AuthorizationCodeBearer(
     authorizationUrl=_authorization_url,
     tokenUrl=_token_url,
-    auto_error=True,
+    auto_error=False,
 )
 
 oauth2_scheme_optional = OAuth2AuthorizationCodeBearer(
@@ -73,7 +73,7 @@ def _extract_user_from_token(token_info: dict) -> AuthenticatedUser:
     )
 
 async def get_current_user(
-    token: Annotated[str, Depends(oauth2_scheme)],
+    token: Annotated[Optional[str], Depends(oauth2_scheme)],
 ) -> AuthenticatedUser:
     """
     Validate JWT token and return authenticated user.
@@ -89,6 +89,9 @@ async def get_current_user(
         detail="Could not validate credentials",
         headers={"WWW-Authenticate": "Bearer"},
     )
+
+    if token is None:
+        raise credentials_exception
     
     try:
         keycloak_openid = get_keycloak_openid()

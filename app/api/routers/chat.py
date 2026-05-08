@@ -313,21 +313,37 @@ async def _handle_write_mode(
         async def _save_planning_state(state: PlanningState) -> None:
             await _save_context(planning_state=state.to_dict())
 
-        # ── 1. Orchestrator classification ───────────────────────────────
-        orchestrator = get_writing_orchestrator()
-        decision = await orchestrator.classify(ctx, planning_state, dbg=dbg)
-        ctx.decision = decision
+        # ── [DIRECT CORRECTION] fast-path — bypass orchestrator + planning ──
+        from app.agents.writing.models import OrchestratorDecision as _OrchestratorDecision
+        is_direct_correction = ctx.user_message.strip().startswith("[DIRECT CORRECTION]")
+        if is_direct_correction:
+            decision = _OrchestratorDecision(
+                invoke_planning=False,
+                reasoning="Direct correction pass — skip planning",
+            )
+            ctx.decision = decision
+            ctx.planning_instructions = None
+            planning_state = PlanningState(status=PlanningStatus.IDLE)
+            await _save_planning_state(planning_state)
+            dbg.log_step("planning", "branch", "DIRECT_CORRECTION_bypass")
+        else:
+            # ── 1. Orchestrator classification ───────────────────────────────
+            orchestrator = get_writing_orchestrator()
+            decision = await orchestrator.classify(ctx, planning_state, dbg=dbg)
+            ctx.decision = decision
 
-        logger.info(
-            "Orchestrator decision: invoke_planning=%s, reasoning=%s",
-            decision.invoke_planning,
-            decision.reasoning[:80],
-        )
+            logger.info(
+                "Orchestrator decision: invoke_planning=%s, reasoning=%s",
+                decision.invoke_planning,
+                decision.reasoning[:80],
+            )
 
         # ── 2. Planning phase (if needed) ────────────────────────────────
         planning_agent = get_planning_agent()
 
-        if planning_state.status == PlanningStatus.ASKING:
+        if is_direct_correction:
+            pass  # skip all planning branches
+        elif planning_state.status == PlanningStatus.ASKING:
             # ── Branch A: user is answering planning questions (always terminal) ──
             dbg.log_step("planning", "branch", "A_answering_questions")
 
@@ -414,6 +430,20 @@ async def _handle_write_mode(
         dbg.log_step("writing", "content", write_result["content"])
 
         draft_content = write_result["content"]
+
+        # ── 3b. Ruleset pass + one-time fix ─────────────────────────────
+        if ctx.ruleset:
+            ruleset_result = await validator.validate_ruleset(draft_content, ctx.ruleset)
+            dbg.log_step("ruleset_validation", "has_issues", ruleset_result["has_issues"])
+            if ruleset_result["has_issues"] and ruleset_result["issues_text"]:
+                logger.info("Ruleset issues found, re-running writing agent once")
+                rewrite_result = await writer.rewrite_with_ruleset_issues(
+                    ctx, draft_content, ruleset_result["issues_text"], dbg=dbg,
+                )
+                draft_content = rewrite_result["content"]
+                dbg.log_step("ruleset_validation", "rewrite_content", draft_content)
+        else:
+            dbg.log_step("ruleset_validation", "skipped", "no ruleset configured")
 
         # ── 4. LaTeX validation phase ────────────────────────────────────
         val_result = await validator.validate_latex(draft_content, ctx, dbg=dbg)

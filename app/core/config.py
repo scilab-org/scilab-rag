@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     IMAGE_MODEL_TEMPERATURE: float = 0.2
 
     # Summary Model Configuration
-    SUMMARY_MODEL_MAX_TOKENS: int = 10000
+    SUMMARY_MODEL_MAX_TOKENS: int = 30000
     SUMMARY_MODEL_CONTEXT_WINDOW: int = 128000
     SUMMARY_MODEL_TEMPERATURE: float = 0.1
 

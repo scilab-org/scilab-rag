@@ -68,12 +68,13 @@ def _build_attribution(authors: str, pub_year_str: str, paper_name: str = "") ->
             last_name = first_parts[0] if first_parts else author_list[0]
             author_short = f"{last_name} et al." if len(author_list) > 1 else last_name
 
+    suffix = f" — {paper_name}" if paper_name else ""
     if author_short and year:
-        return f"{author_short}, {year}"
+        return f"{author_short}, {year}{suffix}"
     if author_short:
-        return author_short
+        return f"{author_short}{suffix}"
     if year:
-        return year
+        return f"{year}{suffix}"
     return paper_name  # fall back to paper name if no author/year info
 
 

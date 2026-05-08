@@ -18,15 +18,15 @@ logger = logging.getLogger(__name__)
 _KEYWORDS_LABEL = re.compile(r'^\s*(keywords?|index\s+terms?)\s*$', re.IGNORECASE)
 _KEYWORDS_PATTERNS = [
     # "Keywords: anything" at line start
-    re.compile(r'^\s*(keywords|index\s+terms)\s*:\s*(.+)$', re.IGNORECASE | re.MULTILINE),
+    re.compile(r'^\s*(keywords?|index\s+terms?)\s*:\s*(.+)$', re.IGNORECASE | re.MULTILINE),
     # "Keywords foo, bar" at line start — commas required to avoid prose
-    re.compile(r'^\s*(keywords|index\s+terms)[ \t]+([^,\n]+(?:,[ \t]*[^,\n]+)+)$', re.IGNORECASE | re.MULTILINE),
+    re.compile(r'^\s*(keywords?|index\s+terms?)[ \t]+([^,\n]+(?:,[ \t]*[^,\n]+)+)$', re.IGNORECASE | re.MULTILINE),
     # "... Public Health Keywords: term1, term2" mid-line — commas required
-    re.compile(r'\b(keywords|index\s+terms)\s*:\s*([^,\n]+(?:,[ \t]*[^,\n]+)+)', re.IGNORECASE | re.MULTILINE),
+    re.compile(r'\b(keywords?|index\s+terms?)\s*:\s*([^,\n]+(?:,[ \t]*[^,\n]+)+)', re.IGNORECASE | re.MULTILINE),
     # "Keywords" alone on its own line, terms on next line(s) until blank line
-    re.compile(r'^\s*(keywords|index\s+terms)\s*$\n+((?:(?!\n\n).)+)', re.IGNORECASE | re.MULTILINE | re.DOTALL),
+    re.compile(r'^\s*(keywords?|index\s+terms?)\s*$\n+((?:(?!\n\n).)+)', re.IGNORECASE | re.MULTILINE | re.DOTALL),
 ]
-
+    
 
 class AutoTagger(TransformComponent):
     llm: LLM

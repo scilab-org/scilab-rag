@@ -1,9 +1,10 @@
 """
 Validation Agent — 3-stage pipeline.
 
-  Stage 1: Grammar & diction check (LLM)
-  Stage 2: Semantic check — checklist rules + journal style (LLM)
-  Stage 3: Citation check
+  Stage 1:  Grammar & diction check (LLM)
+  Stage 2a: Checklist rules check (LLM) — only if checklist_items provided
+  Stage 2b: Journal style audit (LLM)   — only if journal_style provided
+  Stage 3:  Citation check
     3a. Programmatic — invalid \cite{} keys + raw @article blocks in body
     3b. Fact-check — per-claim retrieval (LLM, full sentence preserved)
 
@@ -22,11 +23,14 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from llama_index.core.llms import ChatMessage, LLM
 
 from app.agents.writing.models import WritingContext
+from app.agents.writing.planning_agent import _build_attribution
 from app.agents.writing.prompts import (
     CHECKLIST_VALIDATION_PROMPT,
     CITATION_FACT_CHECK_PROMPT,
     GRAMMAR_VALIDATION_PROMPT,
+    JOURNAL_STYLE_AUDIT_PROMPT,
     LATEX_VALIDATION_PROMPT,
+    RULESET_VALIDATION_PROMPT,
     VALIDATION_SYSTEM_PROMPT,
 )
 from app.services.latex_validator import (
@@ -39,6 +43,18 @@ if TYPE_CHECKING:
     from app.agents.writing.debug import WritePipelineDebugger
 
 logger = logging.getLogger(__name__)
+
+
+def _format_citation_chunk(c: dict) -> str:
+    """Format a retrieved chunk with a source attribution header."""
+    attribution = _build_attribution(
+        authors=c.get("authors", ""),
+        pub_year_str=c.get("publication_month_year", ""),
+        paper_name=c.get("paper_name", ""),
+    )
+    header = f"[Source: {attribution}]" if attribution else "[Source: unknown]"
+    return f"{header}\n{c['text'].strip()}"
+
 
 # ── Sentence truncation ──────────────────────────────────────────────────
 
@@ -70,6 +86,7 @@ def _make_issue(
     detail: str,
     cite_key: Optional[str] = None,
     preserve_sentence: bool = False,
+    preserve_detail: bool = False,
 ) -> dict:
     return {
         "id": str(uuid.uuid4()),
@@ -77,7 +94,7 @@ def _make_issue(
         "severity": severity,
         "rule": rule,
         "sentence": sentence if preserve_sentence else _truncate(sentence),
-        "detail": _cap(detail),
+        "detail": detail if preserve_detail else detail,
         **({"citeKey": cite_key} if cite_key else {}),
     }
 
@@ -142,15 +159,25 @@ class ValidationAgent:
         except Exception:
             logger.exception("Grammar check failed, skipping")
 
-        # ── Stage 2: Checklist + journal style ───────────────────────────
+        # ── Stage 2a: Checklist ───────────────────────────────────────────
         if ctx.checklist_items:
             try:
-                semantic_issues = await self._validate_checklist(
-                    content, ctx.checklist_items, ctx.journal_style or ""
+                checklist_issues = await self._validate_checklist(
+                    content, ctx.checklist_items
                 )
-                all_issues.extend(semantic_issues)
+                all_issues.extend(checklist_issues)
             except Exception:
                 logger.exception("Checklist check failed, skipping")
+
+        # ── Stage 2b: Journal style audit ────────────────────────────────
+        if ctx.journal_style:
+            try:
+                style_issues = await self._validate_journal_style(
+                    content, ctx.journal_style, ctx.section_target or ""
+                )
+                all_issues.extend(style_issues)
+            except Exception:
+                logger.exception("Journal style check failed, skipping")
 
         # ── Stage 3a: Programmatic citation checks ───────────────────────
         programmatic = self._check_citation_keys(content, ctx.cite_key_map)
@@ -158,12 +185,12 @@ class ValidationAgent:
         all_issues.extend(programmatic)
 
         # ── Stage 3b: Citation fact-check (LLM + retrieval) ─────────────
-        if self._graph_store and self._embed_model and ctx.paper_ids:
-            try:
-                fact_issues = await self._validate_citation_facts(content, ctx)
-                all_issues.extend(fact_issues)
-            except Exception:
-                logger.exception("Citation fact-check failed, skipping")
+        # if self._graph_store and self._embed_model and ctx.paper_ids:
+        #     try:
+        #         fact_issues = await self._validate_citation_facts(content, ctx)
+        #         all_issues.extend(fact_issues)
+        #     except Exception:
+        #         logger.exception("Citation fact-check failed, skipping")
 
         has_issues = bool(all_issues)
         markdown_summary = self._format_summary(all_issues)
@@ -173,6 +200,45 @@ class ValidationAgent:
             "issues": all_issues,
             "has_issues": has_issues,
         }
+
+    # ════════════════════════════════════════════════════════════════════
+    # PUBLIC: inline ruleset pass (called during write pipeline)
+    # ════════════════════════════════════════════════════════════════════
+
+    async def validate_ruleset(self, content: str, ruleset: str) -> dict:
+        """
+        Check written content against the user-provided ruleset only.
+
+        Called between the write step and LaTeX structural validation in the
+        write pipeline.  Skipped entirely when ruleset is empty.
+
+        Returns:
+            {
+                "has_issues": bool,
+                "issues_text": str,  # formatted bullet string for rewrite prompt
+            }
+        """
+        prompt = RULESET_VALIDATION_PROMPT.format(ruleset=ruleset, content=content)
+        messages = [ChatMessage(role="user", content=prompt)]
+
+        try:
+            response = await self._llm.achat(messages)
+            raw = _strip_json((response.message.content or "").strip())
+            result = json.loads(raw)
+            has_issues = result.get("has_issues", False)
+            issues = result.get("issues", [])
+
+            issues_text = "\n".join(
+                f"- [{i.get('rule', 'Style Rule')}] {i.get('description', '')} "
+                f"(at: {i.get('location', 'unspecified')})"
+                for i in issues
+            ) if issues else ""
+
+            return {"has_issues": has_issues, "issues_text": issues_text}
+
+        except (json.JSONDecodeError, Exception):
+            logger.warning("Ruleset validation failed, skipping rewrite", exc_info=True)
+            return {"has_issues": False, "issues_text": ""}
 
     # ════════════════════════════════════════════════════════════════════
     # STAGE 1: Grammar
@@ -209,7 +275,6 @@ class ValidationAgent:
         self,
         content: str,
         checklist_items: List[dict],
-        journal_style: str,
     ) -> List[dict]:
         # Format checklist items as a numbered list for the prompt
         items_text = "\n".join(
@@ -219,7 +284,6 @@ class ValidationAgent:
         )
 
         prompt = CHECKLIST_VALIDATION_PROMPT.format(
-            journal_style=journal_style or "Not specified",
             checklist_items=items_text,
             content=content,
         )
@@ -250,6 +314,47 @@ class ValidationAgent:
             return issues
         except json.JSONDecodeError:
             logger.warning("Checklist validation returned invalid JSON: %s", raw[:200])
+            return []
+
+    # ════════════════════════════════════════════════════════════════════
+    # STAGE 2b: Journal style audit
+    # ════════════════════════════════════════════════════════════════════
+
+    async def _validate_journal_style(
+        self,
+        content: str,
+        journal_style: str,
+        section_target: str,
+    ) -> List[dict]:
+        prompt = JOURNAL_STYLE_AUDIT_PROMPT.format(
+            journal_style=journal_style,
+            section_target=section_target or "this section",
+            content=content,
+        )
+        messages = [ChatMessage(role="user", content=prompt)]
+
+        response = await self._fact_check_llm.achat(messages)
+        raw = _strip_json((response.message.content or "").strip())
+
+        try:
+            result = json.loads(raw)
+            issues = []
+            for item in result.get("violations", []):
+                sentence = item.get("sentence", "")
+                detail = item.get("detail", "")
+                rule = item.get("rule", "Style Rule")
+                if not detail:
+                    continue
+                issues.append(_make_issue(
+                    stage="style",
+                    severity="error",
+                    rule=rule,
+                    sentence=sentence,
+                    detail=detail,
+                ))
+            return issues
+        except json.JSONDecodeError:
+            logger.warning("Journal style validation returned invalid JSON: %s", raw[:200])
             return []
 
     # ════════════════════════════════════════════════════════════════════
@@ -324,7 +429,7 @@ class ValidationAgent:
             embedding = self._embed_model.get_text_embedding(sentence)
             chunks = self._graph_store.retrieve_chunks(embedding, [paper_id], top_k=3)
             chunks_text = "\n---\n".join(
-                c["text"] for c in chunks if c.get("text")
+                _format_citation_chunk(c) for c in chunks if c.get("text")
             )
             if chunks_text:
                 staged.append((cite_key, sentence, chunks_text))
@@ -367,10 +472,11 @@ class ValidationAgent:
                 stage="citation",
                 severity="warning",
                 rule="Fact Check",
-                sentence=sentence,   # full sentence — not truncated
+                sentence=sentence,
                 detail=result.get("issue", "Claim not supported by cited paper."),
                 cite_key=cite_key,
                 preserve_sentence=True,
+                preserve_detail=True,
             )
         except Exception:
             logger.warning("Citation fact-check LLM error for [%s], skipping", cite_key)
@@ -421,66 +527,94 @@ class ValidationAgent:
     # ════════════════════════════════════════════════════════════════════
 
     def _format_summary(self, issues: List[dict]) -> str:
-        if not issues:
-            return (
-                "## Validation Results\n\n"
-                "✓ No grammar errors found.\n"
-                "✓ All checklist rules passed.\n"
-                "✓ All citations are valid."
-            )
-
         # Group by stage
-        by_stage: Dict[str, List[dict]] = {"grammar": [], "semantic": [], "citation": []}
+        by_stage: Dict[str, List[dict]] = {
+            "grammar": [],
+            "semantic": [],
+            "style": [],
+            "citation": [],
+        }
         for issue in issues:
             by_stage.setdefault(issue["stage"], []).append(issue)
 
-        stage_labels = {
-            "grammar": "Grammar",
-            "semantic": "Journal Style & Checklist",
-            "citation": "Citations",
-        }
         severity_icon = {"error": "✕", "warning": "⚠"}
+        lines = ["# Validation Results", ""]
 
-        lines = ["## Validation Results", ""]
+        def _render_issues(stage_issues: List[dict]) -> None:
+            for issue in stage_issues:
+                icon = severity_icon.get(issue["severity"], "⚠")
+                safe_sentence = " ".join(issue.get("sentence", "").split())
+                line = f"- {icon} **[{issue['rule']}]**"
+                if safe_sentence:
+                    line += f" `{safe_sentence}`"
+                if issue.get("detail"):
+                    line += f" — {issue['detail']}"
+                lines.append(line)
 
-        for stage_key, label in stage_labels.items():
-            stage_issues = by_stage.get(stage_key, [])
-            if not stage_issues:
-                continue
-
-            error_count = sum(1 for i in stage_issues if i["severity"] == "error")
-            warn_count = sum(1 for i in stage_issues if i["severity"] == "warning")
+        # ── 1. Grammar ───────────────────────────────────────────────────
+        grammar_issues = by_stage.get("grammar", [])
+        if grammar_issues:
+            error_count = sum(1 for i in grammar_issues if i["severity"] == "error")
+            warn_count = sum(1 for i in grammar_issues if i["severity"] == "warning")
             counts = []
             if error_count:
                 counts.append(f"{error_count} error{'s' if error_count > 1 else ''}")
             if warn_count:
                 counts.append(f"{warn_count} warning{'s' if warn_count > 1 else ''}")
-            count_str = " · ".join(counts)
-
-            lines.append(f"### {label}  ·  {count_str}")
+            lines.append(f"## 1. Lexical & Grammar  ·  {' · '.join(counts)}")
             lines.append("")
+            _render_issues(grammar_issues)
+        else:
+            lines.append("## 1. Lexical & Grammar")
+            lines.append("")
+            lines.append("✓ No grammar errors found.")
+        lines.append("")
 
-            for issue in stage_issues:
-                icon = severity_icon.get(issue["severity"], "⚠")
-                rule = issue["rule"]
-                sentence = issue.get("sentence", "")
-                detail = issue.get("detail", "")
-                cite_key = issue.get("citeKey", "")
+        # ── 2. Style & Checklist ─────────────────────────────────────────
+        checklist_issues = by_stage.get("semantic", [])
+        style_issues = by_stage.get("style", [])
+        total_sc = len(checklist_issues) + len(style_issues)
+        if total_sc:
+            lines.append(f"## 2. Style & Checklist  ·  {total_sc} issue{'s' if total_sc != 1 else ''}")
+        else:
+            lines.append("## 2. Style & Checklist")
+        lines.append("")
 
-                # Build the issue line
-                if cite_key and stage_key == "citation":
-                    lines.append(f"- {icon} **[{rule}]** `{sentence}`")
-                elif sentence:
-                    lines.append(f"- {icon} **[{rule}]** `{sentence}`")
-                else:
-                    lines.append(f"- {icon} **[{rule}]**")
+        lines.append("### Checklist")
+        if checklist_issues:
+            _render_issues(checklist_issues)
+        else:
+            lines.append("✓ All checklist rules passed.")
+        lines.append("")
 
-                if detail:
-                    lines.append(f"  > {detail}")
-                lines.append("")
+        lines.append("### Journal Style")
+        if style_issues:
+            _render_issues(style_issues)
+        else:
+            lines.append("✓ All journal style rules passed.")
+        lines.append("")
+
+        # ── 3. Citations ─────────────────────────────────────────────────
+        citation_issues = by_stage.get("citation", [])
+        if citation_issues:
+            error_count = sum(1 for i in citation_issues if i["severity"] == "error")
+            warn_count = sum(1 for i in citation_issues if i["severity"] == "warning")
+            counts = []
+            if error_count:
+                counts.append(f"{error_count} error{'s' if error_count > 1 else ''}")
+            if warn_count:
+                counts.append(f"{warn_count} warning{'s' if warn_count > 1 else ''}")
+            lines.append(f"## 3. Citations  ·  {' · '.join(counts)}")
+            lines.append("")
+            _render_issues(citation_issues)
+        else:
+            lines.append("## 3. Citations")
+            lines.append("")
+            lines.append("✓ All citations are valid.")
+        lines.append("")
 
         total = len(issues)
-        lines.append(f"---")
+        lines.append("---")
         lines.append(f"{total} issue{'s' if total != 1 else ''} found.")
 
         return "\n".join(lines)

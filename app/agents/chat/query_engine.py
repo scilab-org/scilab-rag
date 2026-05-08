@@ -194,10 +194,11 @@ class GraphRAGQueryEngine:
     def _build_attribution_suffix(
         authors: str,
         publication_month_year: str,
+        paper_name: str = "",
     ) -> str:
-        """Build a short '(Author et al., Year)' attribution string.
+        """Build a short 'Author et al., Year — Paper Name' attribution string.
 
-        Only included when at least one of authors/year is available.
+        Only included when at least one of authors/year/paper_name is available.
         Never exposes cite_key or paper_id.
         """
         # Extract year from e.g. "May 2015" or "2015"
@@ -225,13 +226,14 @@ class GraphRAGQueryEngine:
                 else:
                     author_short = last_name
 
+        suffix = f" — {paper_name}" if paper_name else ""
         if author_short and year:
-            return f"{author_short}, {year}"
+            return f"{author_short}, {year}{suffix}"
         if author_short:
-            return author_short
+            return f"{author_short}{suffix}"
         if year:
-            return year
-        return ""
+            return f"{year}{suffix}"
+        return paper_name  # fallback when no authors/year
 
     @staticmethod
     def _format_graph_records(
@@ -286,7 +288,7 @@ class GraphRAGQueryEngine:
             )
             # Enrich label with attribution suffix (authors + year)
             attribution = GraphRAGQueryEngine._build_attribution_suffix(
-                src_authors, src_pub_year,
+                src_authors, src_pub_year, src_paper_name,
             )
             if paper_label and attribution:
                 group_key = f"{source} ({paper_label} — {attribution})"
@@ -323,7 +325,7 @@ class GraphRAGQueryEngine:
             paper_label = GraphRAGQueryEngine._resolve_paper_label(
                 paper_id, chunk_paper_name, paper_names,
             )
-            attribution = GraphRAGQueryEngine._build_attribution_suffix(authors, pub_year)
+            attribution = GraphRAGQueryEngine._build_attribution_suffix(authors, pub_year, chunk_paper_name)
             if paper_label and attribution:
                 header = f"[{paper_label} — {attribution}]"
             elif paper_label:
