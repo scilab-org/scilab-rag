@@ -121,8 +121,13 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
         )
 
     # ------------------------------------------------------------------
-    # Step 4: Run the ingestion pipeline and publish the outcome.
+    # Step 4: Run the ingestion pipeline.
+    # The publish step is intentionally outside this try/except so that
+    # a publish error never gets swallowed by the ingestion error handler.
     # ------------------------------------------------------------------
+    ingestion_error: str | None = None
+    ingestion_success: bool = False
+
     try:
         result = await ingest_paper_to_kg(
             paper_id=ingestion_msg.paper_id,
@@ -137,9 +142,11 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
             doi=ingestion_msg.doi,
             publication_month_year=ingestion_msg.publication_month_year,
         )
+        ingestion_success = result.success
+        ingestion_error = result.error
 
         if not result.success:
-            # Ingestion failed — remove the guard row so a future retry can run.
+            # Known failure — remove the guard row so a future retry can run.
             try:
                 async with AsyncSessionLocal() as session:
                     row = await session.get(ProcessedMessage, ingestion_msg.paper_id)
@@ -152,19 +159,15 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
                     ingestion_msg.paper_id,
                 )
 
-        completed = PaperIngestionCompletedMessage(
-            paper_id=ingestion_msg.paper_id,
-            is_success=result.success,
-            error_message=result.error,
-        )
-        await publish_paper_ingestion_completed(completed)
-
     except Exception:
         logger.exception(
             "Unhandled error during ingestion for paper %s (%s)",
             ingestion_msg.paper_id,
             ingestion_msg.paper_name,
         )
+        ingestion_success = False
+        ingestion_error = "Unexpected internal error during ingestion"
+
         # Remove the guard row so a retry is possible.
         try:
             async with AsyncSessionLocal() as session:
@@ -177,19 +180,26 @@ async def _handle_message(message: AbstractIncomingMessage) -> None:
                 "Failed to remove idempotency guard row for paper %s",
                 ingestion_msg.paper_id,
             )
-        # Publish a failure event so the .NET side is not left waiting.
-        try:
-            completed = PaperIngestionCompletedMessage(
-                paper_id=ingestion_msg.paper_id,
-                is_success=False,
-                error_message="Unexpected internal error during ingestion",
-            )
-            await publish_paper_ingestion_completed(completed)
-        except Exception:
-            logger.exception(
-                "Failed to publish failure event for paper %s",
-                ingestion_msg.paper_id,
-            )
+
+    # ------------------------------------------------------------------
+    # Step 5: Always publish the outcome — success or failure.
+    # publish_paper_ingestion_completed retries internally (3x, 2s delay).
+    # If all retries fail it raises, which is logged here.  The .NET side
+    # will not be notified, but this is now explicit and observable.
+    # ------------------------------------------------------------------
+    try:
+        completed = PaperIngestionCompletedMessage(
+            paper_id=ingestion_msg.paper_id,
+            is_success=ingestion_success,
+            error_message=ingestion_error,
+        )
+        await publish_paper_ingestion_completed(completed)
+    except Exception:
+        logger.error(
+            "Permanent publish failure for paper %s — status will remain Pending on .NET side. "
+            "Manual intervention required.",
+            ingestion_msg.paper_id,
+        )
 
 
 async def start_consumer() -> Optional[str]:
