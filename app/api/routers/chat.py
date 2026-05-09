@@ -432,18 +432,18 @@ async def _handle_write_mode(
         draft_content = write_result["content"]
 
         # ── 3b. Ruleset pass + one-time fix ─────────────────────────────
-        if ctx.ruleset:
-            ruleset_result = await validator.validate_ruleset(draft_content, ctx.ruleset)
-            dbg.log_step("ruleset_validation", "has_issues", ruleset_result["has_issues"])
-            if ruleset_result["has_issues"] and ruleset_result["issues_text"]:
-                logger.info("Ruleset issues found, re-running writing agent once")
-                rewrite_result = await writer.rewrite_with_ruleset_issues(
-                    ctx, draft_content, ruleset_result["issues_text"], dbg=dbg,
-                )
-                draft_content = rewrite_result["content"]
-                dbg.log_step("ruleset_validation", "rewrite_content", draft_content)
-        else:
-            dbg.log_step("ruleset_validation", "skipped", "no ruleset configured")
+        # if ctx.ruleset:
+        #     ruleset_result = await validator.validate_ruleset(draft_content, ctx.ruleset)
+        #     dbg.log_step("ruleset_validation", "has_issues", ruleset_result["has_issues"])
+        #     if ruleset_result["has_issues"] and ruleset_result["issues_text"]:
+        #         logger.info("Ruleset issues found, re-running writing agent once")
+        #         rewrite_result = await writer.rewrite_with_ruleset_issues(
+        #             ctx, draft_content, ruleset_result["issues_text"], dbg=dbg,
+        #         )
+        #         draft_content = rewrite_result["content"]
+        #         dbg.log_step("ruleset_validation", "rewrite_content", draft_content)
+        # else:
+        #     dbg.log_step("ruleset_validation", "skipped", "no ruleset configured")
 
         # ── 4. LaTeX validation phase ────────────────────────────────────
         val_result = await validator.validate_latex(draft_content, ctx, dbg=dbg)

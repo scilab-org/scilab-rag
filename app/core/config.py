@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     OPENROUTER_IMAGE_MODEL: str = "openai/gpt-4o-mini"
     OPENROUTER_SUMMARY_MODEL: str = "google/gemini-2.5-flash-lite"
     # OPENROUTER_CHAT_MODEL: str = "openai/gpt-4o"
-    OPENROUTER_CHAT_MODEL: str = "openai/gpt-oss-120b"
+    OPENROUTER_CHAT_MODEL: str = "google/gemini-2.5-pro"
     OPENROUTER_EXTRACT_MODEL: str = "google/gemini-2.5-flash-lite"
 
     # Image Model Configuration
