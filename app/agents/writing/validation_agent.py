@@ -170,14 +170,14 @@ class ValidationAgent:
                 logger.exception("Checklist check failed, skipping")
 
         # ── Stage 2b: Journal style audit ────────────────────────────────
-        if ctx.journal_style:
-            try:
-                style_issues = await self._validate_journal_style(
-                    content, ctx.journal_style, ctx.section_target or ""
-                )
-                all_issues.extend(style_issues)
-            except Exception:
-                logger.exception("Journal style check failed, skipping")
+        # if ctx.journal_style:
+        #     try:
+        #         style_issues = await self._validate_journal_style(
+        #             content, ctx.journal_style, ctx.section_target or ""
+        #         )
+        #         all_issues.extend(style_issues)
+        #     except Exception:
+        #         logger.exception("Journal style check failed, skipping")
 
         # ── Stage 3a: Programmatic citation checks ───────────────────────
         programmatic = self._check_citation_keys(content, ctx.cite_key_map)
@@ -575,24 +575,24 @@ class ValidationAgent:
         style_issues = by_stage.get("style", [])
         total_sc = len(checklist_issues) + len(style_issues)
         if total_sc:
-            lines.append(f"## 2. Style & Checklist  ·  {total_sc} issue{'s' if total_sc != 1 else ''}")
+            lines.append(f"## 2. Checklist  ·  {total_sc} issue{'s' if total_sc != 1 else ''}")
         else:
-            lines.append("## 2. Style & Checklist")
-        lines.append("")
+            lines.append("## 2. Checklist")
+        # lines.append("")
 
-        lines.append("### Checklist")
+        # lines.append("### Checklist")
         if checklist_issues:
             _render_issues(checklist_issues)
         else:
             lines.append("✓ All checklist rules passed.")
         lines.append("")
 
-        lines.append("### Journal Style")
-        if style_issues:
-            _render_issues(style_issues)
-        else:
-            lines.append("✓ All journal style rules passed.")
-        lines.append("")
+        # lines.append("### Journal Style")
+        # if style_issues:
+        #     _render_issues(style_issues)
+        # else:
+        #     lines.append("✓ All journal style rules passed.")
+        # lines.append("")
 
         # ── 3. Citations ─────────────────────────────────────────────────
         citation_issues = by_stage.get("citation", [])
@@ -614,8 +614,11 @@ class ValidationAgent:
         lines.append("")
 
         total = len(issues)
-        lines.append("---")
+        # lines.append("---")
         lines.append(f"{total} issue{'s' if total != 1 else ''} found.")
+        lines.append("---")
+        lines.append("## WARNING")
+        lines.append("AI-generated results may be incomplete or inaccurate. Please review each suggestion critically and exercise your own judgement before making changes.")   
 
         return "\n".join(lines)
 

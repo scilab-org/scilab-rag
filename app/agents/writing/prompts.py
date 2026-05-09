@@ -522,7 +522,7 @@ FORBIDDEN phrases: "discusses", "covers", "addresses", "explores", \
 
 At the end, always add:
 ### WARNING:
-AI writing assistants are fallible. Please review the content carefully for factual accuracy, proper citations, and adherence to your intended meaning before accepting.
+AI writing assistants are fallible. Please review the content carefully for factual accuracy, proper citations, and adherence to your intended meaning before accepting. Keep in mind that AI-generated results may be inaccurate or inconsistent — you are responsible for verifying and justifying all claims before submitting your work.
 """
 
 
@@ -582,8 +582,16 @@ Flag ONLY the following error types — no subjective style feedback:
   missing a subject or a complete predicate (e.g. "What thee.", \
   "Running fast across the field.").
 - **Wrong capitalization** of proper nouns, section names, or the first word of a sentence.
-
-Only flag errors where the author's intent is unambiguous and the usage \
+    
+STRICT RULES:
+- DO NOT flag technical terms, domain terminology, acronyms, abbreviations, \
+  product names, organization names, research terminology, or branded words.
+- DO NOT flag capitalization or spelling for words such as FinTech, fintech, \
+  AI, STEM, IoT, blockchain, COVID-19, SQL, PostgreSQL, Kubernetes, or similar \
+  specialized terms.
+- DO NOT flag author names, institution names, journal names, datasets, \
+  frameworks, software libraries, APIs, or model names.
+- Only flag errors where the author's intent is unambiguous and the usage \
 is objectively wrong. Do NOT suggest rewrites or improvements. \
 When in doubt, skip it.
 
@@ -596,7 +604,7 @@ Return a JSON object:
 {{
   "issues": [
     {{
-      "rule": "<Spelling | Wrong grammar | Sentence fragment | Tense shift | Wrong capitalization>",
+      "rule": "<Spelling | Wrong grammar | Sentence fragment | Wrong capitalization>",
       "sentence": "<exact sentence or fragment containing the error>",
       "detail": "<one sentence: what is wrong, no rewrite>"
     }}
@@ -683,9 +691,7 @@ targets a different section (e.g. a rule about "Introduction" when you are \
 evaluating "Abstract"), skip it entirely.
 
 Evaluate the section content against every concrete, objective rule you can \
-extract from the style guidelines above. Ignore vague preferences — only flag \
-clear violations such as word/length limits, required or forbidden elements, \
-structural requirements, and tense rules.
+extract from the style guidelines above. 
 
 For each violation found, return:
 - rule: short name of the violated rule (e.g. "Abstract Word Limit")
