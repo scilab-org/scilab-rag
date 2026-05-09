@@ -574,6 +574,8 @@ Return ONLY the JSON, no markdown fences.
 GRAMMAR_VALIDATION_PROMPT = """\
 You are a proofreader for academic writing. Detect definitive grammar, \
 spelling, and structural errors in the text below.
+You will receive Latex content of a section.
+Your mission is to validate ONLY natural language prose.
 
 Flag ONLY the following error types — no subjective style feedback:
 - **Spelling**: misspelled words.
@@ -581,9 +583,9 @@ Flag ONLY the following error types — no subjective style feedback:
 - **Sentence fragment**: a group of words punctuated as a sentence but \
   missing a subject or a complete predicate (e.g. "What thee.", \
   "Running fast across the field.").
-- **Wrong capitalization** of proper nouns, section names, or the first word of a sentence.
     
 STRICT RULES:
+- DO NOT flag latex syntax, formatting, citation command. 
 - DO NOT flag technical terms, domain terminology, acronyms, abbreviations, \
   product names, organization names, research terminology, or branded words.
 - DO NOT flag capitalization or spelling for words such as FinTech, fintech, \
@@ -604,7 +606,7 @@ Return a JSON object:
 {{
   "issues": [
     {{
-      "rule": "<Spelling | Wrong grammar | Sentence fragment | Wrong capitalization>",
+      "rule": "<Spelling | Wrong grammar | Sentence fragment>",
       "sentence": "<exact sentence or fragment containing the error>",
       "detail": "<one sentence: what is wrong, no rewrite>"
     }}
